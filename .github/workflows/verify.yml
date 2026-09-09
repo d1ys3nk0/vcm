@@ -8,7 +8,7 @@ on:
 permissions:
   contents: read
 jobs:
-  check:
+  all:
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
