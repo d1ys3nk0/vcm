@@ -22,7 +22,7 @@ tasks:
   verify:quality:
     desc: Run the pinned vulnerability scanner
     cmds:
-      - go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+      - go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
 
   build:
     desc: Build the VCM binary
