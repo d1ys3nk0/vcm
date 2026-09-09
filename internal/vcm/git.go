@@ -6,19 +6,32 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
 func git(dir string, args ...string) (string, error) {
+	out, err := gitRaw(dir, args...)
+	return strings.TrimSpace(out), err
+}
+
+// gitRaw preserves NUL-delimited path output, including leading whitespace.
+func gitRaw(dir string, args ...string) (string, error) {
 	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	var out, errout bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &errout
 	if e := cmd.Run(); e != nil {
-		return "", fmt.Errorf("git %s in %s: %s: %w", strings.Join(args, " "), dir, strings.TrimSpace(errout.String()), e)
+		return "", fmt.Errorf("%s: %w", redactURLCredentials(fmt.Sprintf("git %s in %s: %s", strings.Join(args, " "), dir, strings.TrimSpace(errout.String()))), e)
 	}
-	return strings.TrimSpace(out.String()), nil
+	return out.String(), nil
+}
+
+var urlCredentials = regexp.MustCompile(`([[:alpha:]][[:alnum:]+.-]*://)[^/\s]*@`)
+
+func redactURLCredentials(s string) string {
+	return urlCredentials.ReplaceAllString(s, "${1}[redacted]@")
 }
 func clean(path string) error {
 	s, e := git(path, "status", "--porcelain", "--untracked-files=all")
@@ -111,7 +124,7 @@ func validateOrigin(path string, r Repository) error {
 		return e
 	}
 	if u != r.URL {
-		return fmt.Errorf("repository %s: origin mismatch: got %q, expected %q", r.Name, u, r.URL)
+		return fmt.Errorf("repository %s: origin mismatch: got %q, expected %q", r.Name, redactURLCredentials(u), redactURLCredentials(r.URL))
 	}
 	return nil
 }

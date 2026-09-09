@@ -201,6 +201,9 @@ func (e *Engine) mergeOne(m *Manifest, r *RepoState) error {
 	} else if source != r.Source || target != r.TargetBefore {
 		return fmt.Errorf("repository %s: pending merge source or target changed", r.Repository.Name)
 	}
+	if err = preserveIgnoredOrigin(r.Origin, r.MergeCommit); err != nil {
+		return err
+	}
 	if _, err = git(r.Origin, "read-tree", "-u", "-m", r.TargetBefore, r.MergeCommit); err != nil {
 		return err
 	}
@@ -393,6 +396,9 @@ func (e *Engine) Drop(m *Manifest) error {
 			if err = e.owned(m, r); err != nil {
 				return err
 			}
+			if err = e.cleanupSafety(m, r); err != nil {
+				return err
+			}
 			if e.Force {
 				if err = e.backup(r.Path, r.Repository.Name, m); err != nil {
 					return err
@@ -456,6 +462,66 @@ func (e *Engine) Drop(m *Manifest) error {
 	return e.store.save(m)
 }
 
+// Git's read-tree can overwrite ignored content, including directory/file
+// collisions. Reject those paths before it changes either the index or checkout.
+func preserveIgnoredOrigin(origin, incoming string) error {
+	ignored, err := gitRaw(origin, "ls-files", "--others", "--ignored", "--exclude-standard", "-z")
+	if err != nil || ignored == "" {
+		return err
+	}
+	tracked, err := gitRaw(origin, "ls-tree", "-r", "--name-only", "-z", incoming)
+	if err != nil {
+		return err
+	}
+	// Index both leaves and directory prefixes so ignored build trees do not
+	// require comparing every ignored file with every tracked file.
+	paths := map[string]map[string]bool{}
+	for _, path := range strings.Split(tracked, "\x00") {
+		for prefix := path; prefix != "" && prefix != "."; prefix = filepath.Dir(prefix) {
+			key := strings.ToLower(prefix)
+			if paths[key] == nil {
+				paths[key] = map[string]bool{}
+			}
+			paths[key][prefix] = paths[key][prefix] || prefix == path
+		}
+	}
+	for _, local := range strings.Split(ignored, "\x00") {
+		if local == "" {
+			continue
+		}
+		local = strings.TrimSuffix(local, "/")
+		for prefix := local; prefix != "."; prefix = filepath.Dir(prefix) {
+			for path, leaf := range paths[strings.ToLower(prefix)] {
+				if (prefix == local || leaf) && originPathsCollide(origin, local, path) {
+					return fmt.Errorf("ignored origin content %q in %s collides with incoming path %q; preserve it before retry", local, origin, path)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func originPathsCollide(origin, local, incoming string) bool {
+	if incoming == local || strings.HasPrefix(incoming, local+"/") || strings.HasPrefix(local, incoming+"/") {
+		return true
+	}
+	// On case-insensitive filesystems differently spelled paths can overwrite the
+	// same resource. Confirm the alias on disk instead of assuming case folding.
+	left, right := strings.Split(local, "/"), strings.Split(incoming, "/")
+	n := min(len(left), len(right))
+	for i := range n {
+		if !strings.EqualFold(left[i], right[i]) {
+			return false
+		}
+	}
+	a, err := os.Lstat(filepath.Join(origin, filepath.Join(left[:n]...)))
+	if err != nil {
+		return false
+	}
+	b, err := os.Lstat(filepath.Join(origin, filepath.Join(right[:n]...)))
+	return err == nil && os.SameFile(a, b)
+}
+
 // Plan exposes resources without performing Git writes, hooks, or state changes.
 func (e *Engine) Plan(command string, m *Manifest) map[string]any {
 	paths := []string{e.Root}
@@ -494,7 +560,7 @@ func (e *Engine) checkCompleted(m *Manifest) error {
 func (e *Engine) cleanupSafety(m *Manifest, r *RepoState) error {
 	managed := map[string]bool{}
 	for _, other := range m.Repositories {
-		if other.Owned && !other.Removed && other.Path != r.Path {
+		if other.Owned && !other.Removed && strings.HasPrefix(other.Path, r.Path+string(filepath.Separator)) {
 			managed[other.Path] = true
 		}
 	}
@@ -523,7 +589,7 @@ func (e *Engine) cleanupSafety(m *Manifest, r *RepoState) error {
 		return err
 	}
 	if !e.Force {
-		ignored, err := git(r.Path, "ls-files", "--others", "--ignored", "--exclude-standard", "-z")
+		ignored, err := gitRaw(r.Path, "ls-files", "--others", "--ignored", "--exclude-standard", "-z")
 		if err != nil {
 			return err
 		}
