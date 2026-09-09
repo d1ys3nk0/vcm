@@ -1,10 +1,10 @@
 ---
-name: CI
+
+name: Verify
 on:
-  pull_request:
   push:
-    # Branch pushes only. Release tags are handled by release.yml.
     branches: ['**']
+  pull_request:
 permissions:
   contents: read
 jobs:
