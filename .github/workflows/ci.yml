@@ -3,7 +3,8 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    # Branch pushes only. Release tags are handled by release.yml.
+    branches: ['**']
 permissions:
   contents: read
 jobs:
