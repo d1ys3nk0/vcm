@@ -278,7 +278,7 @@ func (e *Engine) Create(slug string) (*Manifest, error) {
 		return nil, err
 	}
 	m := &Manifest{Version: 1, Tag: tag, Slug: slug, Workspace: path, Origin: e.Root, Config: e.Config, State: "creating", Hooks: map[string]HookState{}}
-	m.Repositories = append(m.Repositories, RepoState{Repository: Repository{Name: "workspace", URL: rootURL, Trunk: e.Config.Trunk, Hooks: e.Config.Hooks}, Origin: e.Root, Path: path})
+	m.Repositories = append(m.Repositories, RepoState{Repository: Repository{Name: "root", URL: rootURL, Trunk: e.Config.Root.Trunk, Hooks: e.Config.Root.Hooks}, Origin: e.Root, Path: path})
 	ordered, _ := e.Config.Order()
 	for _, r := range ordered {
 		m.Repositories = append(m.Repositories, RepoState{Repository: r, Origin: filepath.Join(e.Root, r.Path), Path: filepath.Join(path, r.Path)})
@@ -290,7 +290,7 @@ func (e *Engine) Create(slug string) (*Manifest, error) {
 }
 func (e *Engine) owned(m *Manifest, r *RepoState) error {
 	expected := m.Workspace
-	if r.Repository.Name != "workspace" {
+	if r.Repository.Name != "root" {
 		expected = filepath.Join(m.Workspace, r.Repository.Path)
 	}
 	if r.Path != expected || m.Workspace != filepath.Join(filepath.Dir(e.Root), filepath.Base(e.Root)+"-"+m.Tag) || r.Origin != filepath.Join(e.Root, r.Repository.Path) {
@@ -335,7 +335,7 @@ func (e *Engine) resumeCreate(m *Manifest) error {
 					return err
 				}
 				if !reflect.DeepEqual(current, m.Config) {
-					return fmt.Errorf("workspace configuration changed during synchronization; inspect and drop incomplete Change before retry")
+					return fmt.Errorf("root configuration changed during synchronization; inspect and drop incomplete Change before retry")
 				}
 			}
 			r.Base = base
@@ -409,9 +409,14 @@ func (e *Engine) hooks(m *Manifest, r *RepoState, phase string) error {
 		if err := e.store.save(m); err != nil {
 			return err
 		}
-		cmd := exec.CommandContext(context.Background(), "/bin/sh", "-eu", "-c", h.Command)
+		var cmd *exec.Cmd
+		if h.Shell != "" {
+			cmd = exec.CommandContext(context.Background(), m.Config.Runners.Shell, "-eu", "-o", "pipefail", "-c", h.Shell)
+		} else {
+			cmd = exec.CommandContext(context.Background(), m.Config.Runners.Python, "-c", h.Python)
+		}
 		cmd.Dir = r.Path
-		cmd.Env = append(os.Environ(), "VCM_CHANGE_TAG="+m.Tag, "VCM_CHANGE_SLUG="+m.Slug, "VCM_WORKSPACE="+m.Workspace, "VCM_WORKSPACE_ORIGIN="+m.Origin, "VCM_REPOSITORY_NAME="+r.Repository.Name, "VCM_REPOSITORY_ORIGIN="+r.Origin, "VCM_REPOSITORY_PATH="+r.Path)
+		cmd.Env = append(os.Environ(), "VCM_CHANGE_TAG="+m.Tag, "VCM_CHANGE_SLUG="+m.Slug, "VCM_ROOT="+m.Workspace, "VCM_ROOT_ORIGIN="+m.Origin, "VCM_REPOSITORY_NAME="+r.Repository.Name, "VCM_REPOSITORY_ORIGIN="+r.Origin, "VCM_REPOSITORY_PATH="+r.Path, "VCM_HOOK_PHASE="+phase, "VCM_HOOK_ID="+h.ID)
 		cmd.Stdout = e.Out
 		cmd.Stderr = e.Out
 		err := cmd.Run()

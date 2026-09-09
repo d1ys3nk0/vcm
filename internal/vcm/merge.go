@@ -525,7 +525,7 @@ func originPathsCollide(origin, local, incoming string) bool {
 // Plan exposes resources without performing Git writes, hooks, or state changes.
 func (e *Engine) Plan(command string, m *Manifest) map[string]any {
 	paths := []string{e.Root}
-	for _, r := range e.Config.Repositories {
+	for _, r := range e.Config.Children {
 		paths = append(paths, filepath.Join(e.Root, r.Path))
 	}
 	if m != nil {

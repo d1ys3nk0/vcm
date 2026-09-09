@@ -22,11 +22,11 @@ func safetyFixture(t *testing.T) (store, *Manifest) {
 		t.Fatal(err)
 	}
 	s := store{filepath.Join(common, "vcm")}
-	config := Config{Version: 1, Trunk: "main", Repositories: []Repository{{Name: "api", Path: "repos/api", URL: "https://example.invalid/api.git", Trunk: "main"}}}
+	config := Config{Version: 1, Root: Root{Trunk: "main"}, Children: []Repository{{Name: "api", Path: "repos/api", URL: "https://example.invalid/api.git", Trunk: "main"}}}
 	tag := newTag("safety")
 	change := filepath.Join(filepath.Dir(root), filepath.Base(root)+"-"+tag)
 	m := &Manifest{Version: 1, Tag: tag, Slug: "safety", Workspace: change, Origin: root, Config: config, State: "creating", Hooks: map[string]HookState{}}
-	m.Repositories = []RepoState{{Repository: Repository{Name: "workspace", URL: "https://example.invalid/root.git", Trunk: "main"}, Origin: root, Path: change}, {Repository: config.Repositories[0], Origin: filepath.Join(root, "repos/api"), Path: filepath.Join(change, "repos/api")}}
+	m.Repositories = []RepoState{{Repository: Repository{Name: "root", URL: "https://example.invalid/root.git", Trunk: "main"}, Origin: root, Path: change}, {Repository: config.Children[0], Origin: filepath.Join(root, "repos/api"), Path: filepath.Join(change, "repos/api")}}
 	return s, m
 }
 
@@ -62,6 +62,18 @@ func TestManifestRoundTripAndStrictDecoding(t *testing.T) {
 	if err := s.save(m); err != nil {
 		t.Fatal(err)
 	}
+	filename := filepath.Join(s.dir, m.Tag+".json")
+	raw, err := os.ReadFile(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var persisted Manifest
+	if err := json.Unmarshal(raw, &persisted); err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Config.Runners != (Runners{Shell: "bash", Python: "python"}) {
+		t.Fatalf("manifest omitted runner defaults: %+v", persisted.Config.Runners)
+	}
 	got, err := s.load(m.Tag)
 	if err != nil {
 		t.Fatal(err)
@@ -69,7 +81,6 @@ func TestManifestRoundTripAndStrictDecoding(t *testing.T) {
 	if got.Tag != m.Tag {
 		t.Fatal("wrong Change")
 	}
-	filename := filepath.Join(s.dir, m.Tag+".json")
 	for name, change := range map[string]func([]byte) []byte{
 		"unknown field": func(b []byte) []byte {
 			var data map[string]any
@@ -79,6 +90,23 @@ func TestManifestRoundTripAndStrictDecoding(t *testing.T) {
 			return b
 		},
 		"trailing object": func(b []byte) []byte { return append(b, []byte("{}")...) },
+		"legacy hook command": func(b []byte) []byte {
+			var data map[string]any
+			_ = json.Unmarshal(b, &data)
+			config := data["config"].(map[string]any)
+			root := config["root"].(map[string]any)
+			root["hooks"] = map[string]any{"create": []any{map[string]any{"id": "legacy", "command": "true"}}}
+			b, _ = json.Marshal(data)
+			return b
+		},
+		"blank runner": func(b []byte) []byte {
+			var data map[string]any
+			_ = json.Unmarshal(b, &data)
+			config := data["config"].(map[string]any)
+			config["runners"].(map[string]any)["python"] = ""
+			b, _ = json.Marshal(data)
+			return b
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if err := s.save(m); err != nil {
@@ -170,7 +198,7 @@ func TestConfigurationRejectsSymlinkAliases(t *testing.T) {
 	if err := os.Symlink("real", filepath.Join(root, "alias")); err != nil {
 		t.Fatal(err)
 	}
-	config := Config{Version: 1, Trunk: "main", Repositories: []Repository{{Name: "api", Path: "alias/api", URL: "https://example.invalid/api.git", Trunk: "main"}}}
+	config := Config{Version: 1, Root: Root{Trunk: "main"}, Children: []Repository{{Name: "api", Path: "alias/api", URL: "https://example.invalid/api.git", Trunk: "main"}}}
 	if err := config.Validate(root); err == nil {
 		t.Fatal("in-workspace symlink alias accepted")
 	}

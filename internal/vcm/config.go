@@ -13,10 +13,19 @@ import (
 )
 
 type Hook struct {
-	ID      string `yaml:"id" json:"id"`
-	Command string `yaml:"command" json:"command"`
+	ID     string `yaml:"id" json:"id"`
+	Shell  string `yaml:"shell,omitempty" json:"shell,omitempty"`
+	Python string `yaml:"python,omitempty" json:"python,omitempty"`
 }
 type Hooks map[string][]Hook
+type Runners struct {
+	Shell  string `yaml:"shell,omitempty" json:"shell"`
+	Python string `yaml:"python,omitempty" json:"python"`
+}
+type Root struct {
+	Trunk string `yaml:"trunk" json:"trunk"`
+	Hooks Hooks  `yaml:"hooks,omitempty" json:"hooks,omitempty"`
+}
 type Repository struct {
 	Name      string   `yaml:"name" json:"name"`
 	Path      string   `yaml:"path" json:"path"`
@@ -26,10 +35,19 @@ type Repository struct {
 	Hooks     Hooks    `yaml:"hooks,omitempty" json:"hooks,omitempty"`
 }
 type Config struct {
-	Version      int          `yaml:"version" json:"version"`
-	Trunk        string       `yaml:"trunk" json:"trunk"`
-	Hooks        Hooks        `yaml:"hooks,omitempty" json:"hooks,omitempty"`
-	Repositories []Repository `yaml:"repositories" json:"repositories"`
+	Version  int          `yaml:"version" json:"version"`
+	Runners  Runners      `yaml:"runners,omitempty" json:"runners"`
+	Root     Root         `yaml:"root" json:"root"`
+	Children []Repository `yaml:"children" json:"children"`
+}
+
+func (c *Config) applyDefaults() {
+	if c.Runners.Shell == "" {
+		c.Runners.Shell = "bash"
+	}
+	if c.Runners.Python == "" {
+		c.Runners.Python = "python"
+	}
 }
 
 var identity = regexp.MustCompile(`^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$`)
@@ -53,7 +71,7 @@ func validBranch(s string) bool {
 }
 func readConfig(root string) (Config, error) {
 	var c Config
-	b, e := os.ReadFile(filepath.Join(root, "workspace.yml"))
+	b, e := os.ReadFile(filepath.Join(root, "vcm.yml"))
 	if e != nil {
 		return c, e
 	}
@@ -64,9 +82,36 @@ func readConfig(root string) (Config, error) {
 	}
 	var extra any
 	if e = d.Decode(&extra); e != io.EOF {
-		return c, fmt.Errorf("workspace.yml must contain one document")
+		return c, fmt.Errorf("vcm.yml must contain one document")
 	}
+	if e = validateExplicitRunners(b); e != nil {
+		return c, e
+	}
+	c.applyDefaults()
 	return c, c.Validate(root)
+}
+
+func validateExplicitRunners(b []byte) error {
+	var document yaml.Node
+	if err := yaml.Unmarshal(b, &document); err != nil || len(document.Content) == 0 {
+		return err
+	}
+	root := document.Content[0]
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		if root.Content[i].Value != "runners" {
+			continue
+		}
+		runners := root.Content[i+1]
+		if runners.Kind != yaml.MappingNode {
+			return fmt.Errorf("runners must be an object")
+		}
+		for j := 0; j+1 < len(runners.Content); j += 2 {
+			if (runners.Content[j].Value == "shell" || runners.Content[j].Value == "python") && (runners.Content[j+1].Tag == "!!null" || strings.TrimSpace(runners.Content[j+1].Value) == "") {
+				return fmt.Errorf("runner executable must not be blank")
+			}
+		}
+	}
+	return nil
 }
 func checkHooks(h Hooks, root bool) error {
 	for phase, entries := range h {
@@ -75,7 +120,14 @@ func checkHooks(h Hooks, root bool) error {
 		}
 		ids := map[string]bool{}
 		for _, x := range entries {
-			if !identity.MatchString(x.ID) || strings.TrimSpace(x.Command) == "" || ids[x.ID] {
+			bodies := 0
+			if strings.TrimSpace(x.Shell) != "" {
+				bodies++
+			}
+			if strings.TrimSpace(x.Python) != "" {
+				bodies++
+			}
+			if !identity.MatchString(x.ID) || bodies != 1 || ids[x.ID] {
 				return fmt.Errorf("invalid or duplicate hook %q", x.ID)
 			}
 			ids[x.ID] = true
@@ -111,18 +163,21 @@ func (c Config) Validate(root string) error {
 	if c.Version != 1 {
 		return fmt.Errorf("unsupported configuration version %d", c.Version)
 	}
-	if c.Repositories == nil {
-		return fmt.Errorf("repositories must be an explicit list; use [] for a workspace-only configuration")
+	if c.Children == nil {
+		return fmt.Errorf("children must be an explicit list; use [] for a root-only configuration")
 	}
-	if !validBranch(c.Trunk) {
-		return fmt.Errorf("invalid workspace trunk %q", c.Trunk)
+	if !validBranch(c.Root.Trunk) {
+		return fmt.Errorf("invalid root trunk %q", c.Root.Trunk)
 	}
-	if e := checkHooks(c.Hooks, true); e != nil {
+	if strings.TrimSpace(c.Runners.Shell) == "" && c.Runners.Shell != "" || strings.TrimSpace(c.Runners.Python) == "" && c.Runners.Python != "" {
+		return fmt.Errorf("runner executable must not be blank")
+	}
+	if e := checkHooks(c.Root.Hooks, true); e != nil {
 		return e
 	}
-	names := map[string]bool{"workspace": true}
+	names := map[string]bool{"root": true}
 	paths := []string{}
-	for _, r := range c.Repositories {
+	for _, r := range c.Children {
 		if !identity.MatchString(r.Name) || names[r.Name] {
 			return fmt.Errorf("duplicate or invalid repository name %q", r.Name)
 		}
@@ -150,10 +205,10 @@ func (c Config) Order() ([]Repository, error) {
 	var result []Repository
 	done := map[string]bool{}
 	names := map[string]bool{}
-	for _, r := range c.Repositories {
+	for _, r := range c.Children {
 		names[r.Name] = true
 	}
-	for _, r := range c.Repositories {
+	for _, r := range c.Children {
 		seen := map[string]bool{}
 		for _, d := range r.DependsOn {
 			if !names[d] || seen[d] {
@@ -162,9 +217,9 @@ func (c Config) Order() ([]Repository, error) {
 			seen[d] = true
 		}
 	}
-	for len(result) < len(c.Repositories) {
+	for len(result) < len(c.Children) {
 		found := false
-		for _, r := range c.Repositories {
+		for _, r := range c.Children {
 			if done[r.Name] {
 				continue
 			}

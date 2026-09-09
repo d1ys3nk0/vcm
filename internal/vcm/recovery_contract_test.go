@@ -15,7 +15,7 @@ func saveContractConfig(t *testing.T, e *Engine) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	commitFile(t, e.Root, "workspace.yml", string(data))
+	commitFile(t, e.Root, "vcm.yml", string(data))
 	mustGit(t, e.Root, "push", "origin", "main")
 }
 
@@ -23,22 +23,22 @@ func TestRecoveryContractHookOrder(t *testing.T) {
 	e := fixture(t, 2)
 	log := filepath.Join(filepath.Dir(e.Root), "hook-events")
 	t.Setenv("VCM_TEST_EVENTS", log)
-	e.Config.Repositories[0].DependsOn = []string{e.Config.Repositories[1].Name}
+	e.Config.Children[0].DependsOn = []string{e.Config.Children[1].Name}
 	hook := func(phase string) Hook {
-		return Hook{ID: phase, Command: `test "$PWD" = "$VCM_REPOSITORY_PATH"; test "$(git rev-parse --show-toplevel)" = "$VCM_REPOSITORY_PATH"; test "$(git rev-parse --abbrev-ref HEAD)" = "$VCM_CHANGE_TAG"; printf '%s/` + phase + `\n' "$VCM_REPOSITORY_NAME" >> "$VCM_TEST_EVENTS"`}
+		return Hook{ID: phase, Shell: `test "$PWD" = "$VCM_REPOSITORY_PATH"; test "$(git rev-parse --show-toplevel)" = "$VCM_REPOSITORY_PATH"; test "$(git rev-parse --abbrev-ref HEAD)" = "$VCM_CHANGE_TAG"; test "$VCM_HOOK_PHASE" = "` + phase + `"; test "$VCM_HOOK_ID" = "` + phase + `"; printf '%s/` + phase + `\n' "$VCM_REPOSITORY_NAME" >> "$VCM_TEST_EVENTS"`}
 	}
-	for i := range e.Config.Repositories {
-		e.Config.Repositories[i].Hooks = Hooks{}
+	for i := range e.Config.Children {
+		e.Config.Children[i].Hooks = Hooks{}
 		for _, phase := range []string{"create", "merge", "drop"} {
-			e.Config.Repositories[i].Hooks[phase] = []Hook{hook(phase)}
+			e.Config.Children[i].Hooks[phase] = []Hook{hook(phase)}
 		}
 	}
-	e.Config.Hooks = Hooks{}
+	e.Config.Root.Hooks = Hooks{}
 	for _, phase := range []string{"create", "pre-merge", "post-merge", "drop"} {
-		e.Config.Hooks[phase] = []Hook{hook(phase)}
+		e.Config.Root.Hooks[phase] = []Hook{hook(phase)}
 	}
 	for _, phase := range []string{"create", "drop"} {
-		e.Config.Hooks[phase][0].Command += `; test -e "$VCM_WORKSPACE/repo0/.git"; test -e "$VCM_WORKSPACE/repo1/.git"`
+		e.Config.Root.Hooks[phase][0].Shell += `; test -e "$VCM_ROOT/repo0/.git"; test -e "$VCM_ROOT/repo1/.git"`
 	}
 	saveContractConfig(t, e)
 	m, err := e.Create("hook-order")
@@ -55,7 +55,7 @@ func TestRecoveryContractHookOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "repo1/create\nrepo0/create\nworkspace/create\nworkspace/pre-merge\nrepo1/merge\nrepo0/merge\nworkspace/post-merge\nworkspace/drop\nrepo0/drop\nrepo1/drop\n"
+	want := "repo1/create\nrepo0/create\nroot/create\nroot/pre-merge\nrepo1/merge\nrepo0/merge\nroot/post-merge\nroot/drop\nrepo0/drop\nrepo1/drop\n"
 	if string(data) != want {
 		t.Fatalf("unexpected hook sequence:\n%s\nwant:\n%s", data, want)
 	}
@@ -65,8 +65,8 @@ func TestRecoveryContractPendingSourceDrift(t *testing.T) {
 	e := fixture(t, 2)
 	allow := filepath.Join(filepath.Dir(e.Root), "allow-merge")
 	t.Setenv("VCM_TEST_ALLOW", allow)
-	e.Config.Hooks = Hooks{"pre-merge": {{ID: "reviewed", Command: "true"}}}
-	e.Config.Repositories[0].Hooks = Hooks{"merge": {{ID: "blocked", Command: `test -f "$VCM_TEST_ALLOW"`}}}
+	e.Config.Root.Hooks = Hooks{"pre-merge": {{ID: "reviewed", Shell: "true"}}}
+	e.Config.Children[0].Hooks = Hooks{"merge": {{ID: "blocked", Shell: `test -f "$VCM_TEST_ALLOW"`}}}
 	saveContractConfig(t, e)
 	m, err := e.Create("pending-source")
 	if err != nil {
@@ -98,14 +98,14 @@ func TestRecoveryContractPendingSourceDrift(t *testing.T) {
 }
 
 func TestRecoveryContractDropHookCommitsPreserved(t *testing.T) {
-	for _, owner := range []string{"workspace", "downstream"} {
+	for _, owner := range []string{"root", "downstream"} {
 		t.Run(owner, func(t *testing.T) {
 			e := fixture(t, 1)
-			hooks := Hooks{"drop": {{ID: "retained-output", Command: `printf 'retain this output\n' > hook-output.txt; git add hook-output.txt; git commit -m 'chore: retain hook output'`}}}
-			if owner == "workspace" {
-				e.Config.Hooks = hooks
+			hooks := Hooks{"drop": {{ID: "retained-output", Shell: `printf 'retain this output\n' > hook-output.txt; git add hook-output.txt; git commit -m 'chore: retain hook output'`}}}
+			if owner == "root" {
+				e.Config.Root.Hooks = hooks
 			} else {
-				e.Config.Repositories[0].Hooks = hooks
+				e.Config.Children[0].Hooks = hooks
 			}
 			saveContractConfig(t, e)
 			m, err := e.Create("retain-hook")

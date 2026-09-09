@@ -1,33 +1,42 @@
 # Configuration and hooks
 
-`workspace.yml` uses configuration version `1`. The machine-readable reference is [workspace.schema.json](../schema/workspace.schema.json). Unknown fields are errors. `repositories` must be an explicit list; use `[]` for a workspace without downstream repositories. The CLI additionally validates filesystem path safety, Git branch names, and the dependency graph.
+`vcm.yml` uses configuration version `1`. The machine-readable reference is [vcm.schema.json](../schema/vcm.schema.json). Unknown fields are errors. `children` must be an explicit list; use `[]` for a root without child repositories. The CLI additionally validates filesystem path safety, Git branch names, hook bodies, runner values, and the dependency graph.
 
 | Field | Meaning |
 | --- | --- |
 | `version` | Required integer `1` |
-| `trunk` | Workspace integration branch |
-| `hooks` | Optional workspace lifecycle hooks |
-| `repositories` | Ordered downstream repository declarations |
-| `repositories[].name` | Unique repository identity |
-| `repositories[].path` | Explicit path relative to the workspace root |
-| `repositories[].url` | Expected Git origin URL |
-| `repositories[].trunk` | Downstream integration branch |
-| `repositories[].depends_on` | Optional list of repository names |
-| `repositories[].hooks` | Optional downstream lifecycle hooks |
+| `runners.shell` | Optional shell executable or path; defaults to `bash` |
+| `runners.python` | Optional Python executable or path; defaults to `python` |
+| `root.trunk` | Root integration branch |
+| `root.hooks` | Optional root lifecycle hooks |
+| `children` | Ordered child repository declarations |
+| `children[].name` | Unique child identity; `root` is reserved |
+| `children[].path` | Explicit path relative to the root |
+| `children[].url` | Expected Git origin URL |
+| `children[].trunk` | Child integration branch |
+| `children[].depends_on` | Optional list of child names |
+| `children[].hooks` | Optional child lifecycle hooks |
 
-Paths must remain inside the workspace and must not overlap or escape through symlinks. Repository identities must be unique; dependencies must exist and form an acyclic graph. Git branch names must be valid. Dependencies precede dependents during bootstrap, creation, and merging; declaration order resolves ties. Cleanup reverses that order. Every Change includes every configured repository.
+Runner values are single executable names or paths. VCM does not parse them as shell command lines. Explicit blank or null runner values are invalid. Paths must remain inside the root and must not overlap or escape through symlinks. Child identities must be unique; dependencies must exist and form an acyclic graph. Dependencies precede dependents during bootstrap, creation, and merging; declaration order resolves ties. Cleanup reverses that order. Every Change includes the root and every configured child.
 
 ```yaml
 version: 1
-trunk: main
-hooks:
-  pre-merge:
-    - id: verify
-      command: ./scripts/verify-change.sh
-  post-merge:
-    - id: archive
-      command: ./scripts/archive-change.sh
-repositories:
+runners:
+  shell: /usr/local/bin/bash
+  python: /usr/local/bin/python3
+root:
+  trunk: main
+  hooks:
+    pre-merge:
+      - id: verify
+        shell: |
+          ./scripts/verify-change.sh
+    post-merge:
+      - id: archive
+        python: |
+          from archive import archive_change
+          archive_change()
+children:
   - name: api
     path: repos/api
     url: git@github.com:example/api.git
@@ -35,7 +44,7 @@ repositories:
     hooks:
       create:
         - id: prepare
-          command: ./scripts/prepare-change.sh
+          shell: ./scripts/prepare-change.sh
   - name: web
     path: repos/web
     url: git@github.com:example/web.git
@@ -43,18 +52,20 @@ repositories:
     depends_on: [api]
 ```
 
-Hook entries contain a stable `id` and shell `command`. Workspace phases are `create`, `pre-merge`, `post-merge`, and `drop`. Downstream phases are `create`, `merge`, and `drop`. Entries execute in declaration order with `/bin/sh -eu` in the relevant Change checkout. Commands can use these environment variables:
+Each hook has a stable `id` and exactly one nonblank `shell` or `python` body. Root phases are `create`, `pre-merge`, `post-merge`, and `drop`. Child phases are `create`, `merge`, and `drop`. Entries execute in declaration order in the relevant Change checkout. Shell bodies run as `<runners.shell> -eu -o pipefail -c <body>`; Python bodies run as `<runners.python> -c <body>`.
 
 | Variable | Meaning |
 | --- | --- |
 | `VCM_CHANGE_TAG` | Timestamped Change identity and branch name |
 | `VCM_CHANGE_SLUG` | User-supplied Change slug |
-| `VCM_WORKSPACE` | Change workspace root |
-| `VCM_WORKSPACE_ORIGIN` | Original workspace root |
-| `VCM_REPOSITORY_NAME` | Repository name, or `workspace` for root hooks |
+| `VCM_ROOT` | Change root checkout |
+| `VCM_ROOT_ORIGIN` | Original root checkout |
+| `VCM_REPOSITORY_NAME` | Child name, or `root` for root hooks |
 | `VCM_REPOSITORY_ORIGIN` | Original repository checkout |
 | `VCM_REPOSITORY_PATH` | Relevant Change checkout |
+| `VCM_HOOK_PHASE` | Current lifecycle phase |
+| `VCM_HOOK_ID` | Current hook identity |
 
-A downstream create hook runs immediately after that worktree exists. The workspace create hook runs after the complete workspace exists. Merge runs workspace pre-merge, downstream merge hooks and squash-merges in dependency order, then workspace post-merge and the final workspace squash-merge. Workspace drop hooks run while the complete workspace still exists; downstream drop hooks and cleanup follow in reverse dependency order.
+A child create hook runs immediately after that worktree exists. The root create hook runs after the complete root exists. Merge runs root pre-merge hooks, child merge hooks and squash-merges in dependency order, then root post-merge hooks and the final root squash-merge. Root drop hooks run while all resources still exist; child drop hooks and cleanup follow in reverse dependency order.
 
 Hooks own staging and committing their output. Successful hooks must leave their checkout clean. Failures preserve files for inspection and repair. Hooks must be idempotent: a process interruption can leave external effects whose completion VCM cannot determine. Treat hooks as trusted executable project code.

@@ -9,20 +9,27 @@ import (
 
 func TestConfigurationDecodeRejectsMalformedInput(t *testing.T) {
 	cases := map[string]string{
-		"unknown root field":   "version: 1\ntrunk: main\nrepositories: []\nextra: true\n",
-		"unknown nested field": "version: 1\ntrunk: main\nrepositories:\n- name: api\n  path: api\n  url: /remote\n  trunk: main\n  extra: true\n",
-		"unknown hook field":   "version: 1\ntrunk: main\nrepositories: []\nhooks:\n  create:\n  - id: prepare\n    command: 'true'\n    extra: true\n",
-		"duplicate YAML key":   "version: 1\ntrunk: main\ntrunk: develop\nrepositories: []\n",
-		"multiple documents":   "version: 1\ntrunk: main\nrepositories: []\n---\nversion: 1\n",
-		"missing repositories": "version: 1\ntrunk: main\n",
-		"null repositories":    "version: 1\ntrunk: main\nrepositories: null\n",
-		"missing version":      "trunk: main\nrepositories: []\n",
-		"missing trunk":        "version: 1\nrepositories: []\n",
+		"unknown root field":    "version: 1\nroot:\n  trunk: main\nchildren: []\nextra: true\n",
+		"unknown child field":   "version: 1\nroot:\n  trunk: main\nchildren:\n- name: api\n  path: api\n  url: /remote\n  trunk: main\n  extra: true\n",
+		"unknown hook field":    "version: 1\nroot:\n  trunk: main\n  hooks:\n    create:\n    - id: prepare\n      shell: 'true'\n      extra: true\nchildren: []\n",
+		"legacy command":        "version: 1\nroot:\n  trunk: main\n  hooks:\n    create:\n    - id: prepare\n      command: 'true'\nchildren: []\n",
+		"legacy shape":          "version: 1\ntrunk: main\nrepositories: []\n",
+		"duplicate YAML key":    "version: 1\nroot:\n  trunk: main\n  trunk: develop\nchildren: []\n",
+		"multiple documents":    "version: 1\nroot:\n  trunk: main\nchildren: []\n---\nversion: 1\n",
+		"missing children":      "version: 1\nroot:\n  trunk: main\n",
+		"null children":         "version: 1\nroot:\n  trunk: main\nchildren: null\n",
+		"missing version":       "root:\n  trunk: main\nchildren: []\n",
+		"missing root":          "version: 1\nchildren: []\n",
+		"blank shell runner":    "version: 1\nrunners:\n  shell: '  '\nroot:\n  trunk: main\nchildren: []\n",
+		"blank python runner":   "version: 1\nrunners:\n  python: ''\nroot:\n  trunk: main\nchildren: []\n",
+		"null runners":          "version: 1\nrunners: null\nroot:\n  trunk: main\nchildren: []\n",
+		"null shell runner":     "version: 1\nrunners:\n  shell: null\nroot:\n  trunk: main\nchildren: []\n",
+		"sequence shell runner": "version: 1\nrunners:\n  shell: [bash, -x]\nroot:\n  trunk: main\nchildren: []\n",
 	}
 	for name, input := range cases {
 		t.Run(name, func(t *testing.T) {
 			root := t.TempDir()
-			if err := os.WriteFile(filepath.Join(root, "workspace.yml"), []byte(input), 0600); err != nil {
+			if err := os.WriteFile(filepath.Join(root, "vcm.yml"), []byte(input), 0600); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := readConfig(root); err == nil {
@@ -30,48 +37,77 @@ func TestConfigurationDecodeRejectsMalformedInput(t *testing.T) {
 			}
 		})
 	}
-	t.Run("empty explicit list", func(t *testing.T) {
-		root := t.TempDir()
-		if err := os.WriteFile(filepath.Join(root, "workspace.yml"), []byte("version: 1\ntrunk: main\nrepositories: []\n"), 0600); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := readConfig(root); err != nil {
-			t.Fatal(err)
-		}
-	})
+}
+
+func TestConfigurationRunnerDefaultsAndOverrides(t *testing.T) {
+	for name, input := range map[string]string{
+		"defaults":  "version: 1\nroot:\n  trunk: main\nchildren: []\n",
+		"overrides": "version: 1\nrunners:\n  shell: /opt/bin/bash\n  python: /opt/bin/python3\nroot:\n  trunk: main\nchildren: []\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			if err := os.WriteFile(filepath.Join(root, "vcm.yml"), []byte(input), 0600); err != nil {
+				t.Fatal(err)
+			}
+			config, err := readConfig(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := Runners{Shell: "bash", Python: "python"}
+			if name == "overrides" {
+				want = Runners{Shell: "/opt/bin/bash", Python: "/opt/bin/python3"}
+			}
+			if config.Runners != want {
+				t.Fatalf("runners: %+v, want %+v", config.Runners, want)
+			}
+		})
+	}
+}
+
+func TestConfigurationUsesOnlyVCMFilename(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "workspace.yml"), []byte("version: 1\nroot:\n  trunk: main\nchildren: []\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readConfig(root); !os.IsNotExist(err) {
+		t.Fatalf("legacy configuration was read: %v", err)
+	}
 }
 
 func TestConfigurationRejectsInvalidContracts(t *testing.T) {
 	cases := map[string]func(*Config){
-		"duplicate identity":   func(c *Config) { c.Repositories[1].Name = c.Repositories[0].Name },
-		"reserved identity":    func(c *Config) { c.Repositories[0].Name = "workspace" },
-		"duplicate path":       func(c *Config) { c.Repositories[1].Path = c.Repositories[0].Path },
-		"overlapping paths":    func(c *Config) { c.Repositories[1].Path = c.Repositories[0].Path + "/nested" },
-		"escaping path":        func(c *Config) { c.Repositories[0].Path = "../outside" },
-		"absolute path":        func(c *Config) { c.Repositories[0].Path = "/outside" },
-		"git path":             func(c *Config) { c.Repositories[0].Path = ".git/repo" },
-		"noncanonical path":    func(c *Config) { c.Repositories[0].Path = "repos/../api" },
-		"missing dependency":   func(c *Config) { c.Repositories[0].DependsOn = []string{"absent"} },
-		"duplicate dependency": func(c *Config) { c.Repositories[1].DependsOn = []string{"api", "api"} },
+		"duplicate identity":   func(c *Config) { c.Children[1].Name = c.Children[0].Name },
+		"reserved identity":    func(c *Config) { c.Children[0].Name = "root" },
+		"duplicate path":       func(c *Config) { c.Children[1].Path = c.Children[0].Path },
+		"overlapping paths":    func(c *Config) { c.Children[1].Path = c.Children[0].Path + "/nested" },
+		"escaping path":        func(c *Config) { c.Children[0].Path = "../outside" },
+		"absolute path":        func(c *Config) { c.Children[0].Path = "/outside" },
+		"git path":             func(c *Config) { c.Children[0].Path = ".git/repo" },
+		"noncanonical path":    func(c *Config) { c.Children[0].Path = "repos/../api" },
+		"missing dependency":   func(c *Config) { c.Children[0].DependsOn = []string{"absent"} },
+		"duplicate dependency": func(c *Config) { c.Children[1].DependsOn = []string{"api", "api"} },
 		"cycle": func(c *Config) {
-			c.Repositories[0].DependsOn = []string{"web"}
-			c.Repositories[1].DependsOn = []string{"api"}
+			c.Children[0].DependsOn = []string{"web"}
+			c.Children[1].DependsOn = []string{"api"}
 		},
-		"self dependency":          func(c *Config) { c.Repositories[0].DependsOn = []string{"api"} },
-		"invalid root phase":       func(c *Config) { c.Hooks = Hooks{"merge": {{ID: "prepare", Command: "true"}}} },
-		"invalid repository phase": func(c *Config) { c.Repositories[0].Hooks = Hooks{"post-merge": {{ID: "prepare", Command: "true"}}} },
+		"self dependency":     func(c *Config) { c.Children[0].DependsOn = []string{"api"} },
+		"invalid root phase":  func(c *Config) { c.Root.Hooks = Hooks{"merge": {{ID: "prepare", Shell: "true"}}} },
+		"invalid child phase": func(c *Config) { c.Children[0].Hooks = Hooks{"post-merge": {{ID: "prepare", Shell: "true"}}} },
 		"duplicate hook identity": func(c *Config) {
-			c.Hooks = Hooks{"create": {{ID: "prepare", Command: "true"}, {ID: "prepare", Command: "true"}}}
+			c.Root.Hooks = Hooks{"create": {{ID: "prepare", Shell: "true"}, {ID: "prepare", Python: "pass"}}}
 		},
-		"blank command": func(c *Config) { c.Hooks = Hooks{"create": {{ID: "prepare", Command: " "}}} },
+		"missing body": func(c *Config) { c.Root.Hooks = Hooks{"create": {{ID: "prepare"}}} },
+		"blank shell":  func(c *Config) { c.Root.Hooks = Hooks{"create": {{ID: "prepare", Shell: " "}}} },
+		"blank python": func(c *Config) { c.Root.Hooks = Hooks{"create": {{ID: "prepare", Python: " "}}} },
+		"two bodies":   func(c *Config) { c.Root.Hooks = Hooks{"create": {{ID: "prepare", Shell: "true", Python: "pass"}}} },
 	}
 	for _, branch := range []string{"-option", "feature..x", "feature.lock", "refs//x", "bad name", "feature@{x}", ".hidden", "feature/"} {
 		b := branch
-		cases["branch "+branch] = func(c *Config) { c.Repositories[0].Trunk = b }
+		cases["branch "+branch] = func(c *Config) { c.Children[0].Trunk = b }
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
-			c := Config{Version: 1, Trunk: "main", Repositories: []Repository{{Name: "api", Path: "repos/api", URL: "/remotes/api", Trunk: "main"}, {Name: "web", Path: "repos/web", URL: "/remotes/web", Trunk: "main"}}}
+			c := Config{Version: 1, Root: Root{Trunk: "main"}, Children: []Repository{{Name: "api", Path: "repos/api", URL: "/remotes/api", Trunk: "main"}, {Name: "web", Path: "repos/web", URL: "/remotes/web", Trunk: "main"}}}
 			mutate(&c)
 			if err := c.Validate(t.TempDir()); err == nil {
 				t.Fatal("invalid contract accepted")
@@ -80,8 +116,8 @@ func TestConfigurationRejectsInvalidContracts(t *testing.T) {
 	}
 }
 
-func TestDependenciesUseDeclarationOrderForReadyRepositories(t *testing.T) {
-	c := Config{Repositories: []Repository{{Name: "web", DependsOn: []string{"api"}}, {Name: "docs"}, {Name: "api"}, {Name: "worker", DependsOn: []string{"api"}}}}
+func TestDependenciesUseDeclarationOrderForReadyChildren(t *testing.T) {
+	c := Config{Children: []Repository{{Name: "web", DependsOn: []string{"api"}}, {Name: "docs"}, {Name: "api"}, {Name: "worker", DependsOn: []string{"api"}}}}
 	ordered, err := c.Order()
 	if err != nil {
 		t.Fatal(err)

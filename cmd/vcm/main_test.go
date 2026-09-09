@@ -42,8 +42,8 @@ func cliWorkspace(t *testing.T) string {
 	if out, err := exec.Command("git", "init", root).CombinedOutput(); err != nil {
 		t.Fatalf("git init: %s %v", out, err)
 	}
-	config := "version: 1\ntrunk: main\nrepositories:\n- name: api\n  path: repos/api\n  url: /nonexistent-disposable-remote\n  trunk: main\n"
-	if err := os.WriteFile(filepath.Join(root, "workspace.yml"), []byte(config), 0600); err != nil {
+	config := "version: 1\nroot:\n  trunk: main\nchildren:\n- name: api\n  path: repos/api\n  url: /nonexistent-disposable-remote\n  trunk: main\n"
+	if err := os.WriteFile(filepath.Join(root, "vcm.yml"), []byte(config), 0600); err != nil {
 		t.Fatal(err)
 	}
 	canonical, err := filepath.EvalSymlinks(root)

@@ -70,19 +70,19 @@ func discover(start string) (string, error) {
 		return "", e
 	}
 	for {
-		if _, e := os.Stat(filepath.Join(p, "workspace.yml")); e == nil {
+		if _, e := os.Stat(filepath.Join(p, "vcm.yml")); e == nil {
 			top, e := git(p, "rev-parse", "--show-toplevel")
 			if e != nil {
 				return "", e
 			}
 			if top != p {
-				return "", fmt.Errorf("workspace.yml must be at Git root")
+				return "", fmt.Errorf("vcm.yml must be at Git root")
 			}
 			return p, nil
 		}
 		next := filepath.Dir(p)
 		if next == p {
-			return "", fmt.Errorf("workspace.yml not found above %s", start)
+			return "", fmt.Errorf("vcm.yml not found above %s", start)
 		}
 		p = next
 	}

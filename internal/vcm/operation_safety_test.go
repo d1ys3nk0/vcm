@@ -23,7 +23,7 @@ func TestGitErrorsRedactURLCredentials(t *testing.T) {
 		t.Fatalf("unsafe or unhelpful Git stderr: %v", stderrErr)
 	}
 	mustGit(t, e.Root, "remote", "set-url", "origin", "https://actual-user:actual-password@example.invalid/actual.git")
-	err := validateOrigin(e.Root, Repository{Name: "workspace", URL: "https://expected-user:expected-password@example.invalid/expected.git"})
+	err := validateOrigin(e.Root, Repository{Name: "root", URL: "https://expected-user:expected-password@example.invalid/expected.git"})
 	if err == nil || strings.Contains(err.Error(), "user") || strings.Contains(err.Error(), "password") || !strings.Contains(err.Error(), "actual.git") || !strings.Contains(err.Error(), "expected.git") {
 		t.Fatalf("unsafe or unhelpful origin mismatch: %v", err)
 	}
@@ -118,7 +118,7 @@ func TestDropRechecksDownstreamHookSafety(t *testing.T) {
 			origin := filepath.Join(e.Root, "repo0")
 			commitFile(t, origin, ".gitignore", "local\nforeign/\n")
 			mustGit(t, origin, "push", "origin", "main")
-			e.Config.Repositories[0].Hooks = Hooks{"drop": {{ID: "generate", Command: tc.command}}}
+			e.Config.Children[0].Hooks = Hooks{"drop": {{ID: "generate", Shell: tc.command}}}
 			saveContractConfig(t, e)
 			m, err := e.Create("hook-safety")
 			if err != nil {

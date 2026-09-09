@@ -111,7 +111,7 @@ func (s store) validate(m *Manifest) error {
 	if strings.TrimSpace(rootURL) == "" || strings.HasPrefix(rootURL, "-") {
 		return fmt.Errorf("manifest has invalid workspace origin URL")
 	}
-	want := append([]Repository{{Name: "workspace", URL: rootURL, Trunk: m.Config.Trunk, Hooks: m.Config.Hooks}}, ordered...)
+	want := append([]Repository{{Name: "root", URL: rootURL, Trunk: m.Config.Root.Trunk, Hooks: m.Config.Root.Hooks}}, ordered...)
 	if len(m.Repositories) != len(want) {
 		return fmt.Errorf("manifest repository set does not match configuration")
 	}
@@ -179,6 +179,7 @@ func (s store) validate(m *Manifest) error {
 }
 
 func (s store) save(m *Manifest) error {
+	m.Config.applyDefaults()
 	if e := s.validate(m); e != nil {
 		return e
 	}
@@ -250,13 +251,45 @@ func (s store) load(tag string) (*Manifest, error) {
 	if e = d.Decode(&extra); e != io.EOF {
 		return nil, fmt.Errorf("manifest must contain one JSON object")
 	}
+	if e = validateManifestRunners(b); e != nil {
+		return nil, e
+	}
 	if m.Tag != tag {
 		return nil, fmt.Errorf("invalid manifest %s", tag)
 	}
+	m.Config.applyDefaults()
 	if e = s.validate(&m); e != nil {
 		return nil, e
 	}
 	return &m, nil
+}
+
+func validateManifestRunners(b []byte) error {
+	var manifest map[string]json.RawMessage
+	if err := json.Unmarshal(b, &manifest); err != nil {
+		return err
+	}
+	var config map[string]json.RawMessage
+	if err := json.Unmarshal(manifest["config"], &config); err != nil {
+		return err
+	}
+	raw, present := config["runners"]
+	if !present {
+		return nil
+	}
+	if string(raw) == "null" {
+		return fmt.Errorf("invalid manifest runners")
+	}
+	var runners map[string]*string
+	if err := json.Unmarshal(raw, &runners); err != nil {
+		return fmt.Errorf("invalid manifest runners: %w", err)
+	}
+	for _, name := range []string{"shell", "python"} {
+		if value, ok := runners[name]; ok && (value == nil || strings.TrimSpace(*value) == "") {
+			return fmt.Errorf("invalid manifest %s runner", name)
+		}
+	}
+	return nil
 }
 func (s store) all() ([]*Manifest, error) {
 	if err := secureDirectory(s.dir, false); os.IsNotExist(err) {

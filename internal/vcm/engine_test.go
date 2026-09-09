@@ -7,6 +7,7 @@ import (
 	"go.yaml.in/yaml/v3"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -46,7 +47,7 @@ func fixture(t *testing.T, n int) *Engine {
 	mustGit(t, dir, "init", "--initial-branch=main", root)
 	mustGit(t, root, "config", "user.name", "VCM Test")
 	mustGit(t, root, "config", "user.email", "vcm@example.test")
-	c := Config{Version: 1, Trunk: "main", Repositories: []Repository{}}
+	c := Config{Version: 1, Root: Root{Trunk: "main"}, Children: []Repository{}}
 	for i := 0; i < n; i++ {
 		name := fmt.Sprintf("repo%d", i)
 		remote := filepath.Join(dir, name+".git")
@@ -56,18 +57,18 @@ func fixture(t *testing.T, n int) *Engine {
 		commitFile(t, seed, "file.txt", "base\n")
 		mustGit(t, seed, "remote", "add", "origin", remote)
 		mustGit(t, seed, "push", "origin", "main")
-		c.Repositories = append(c.Repositories, Repository{Name: name, Path: name, URL: remote, Trunk: "main"})
+		c.Children = append(c.Children, Repository{Name: name, Path: name, URL: remote, Trunk: "main"})
 	}
-	data := "version: 1\ntrunk: main\nrepositories:\n"
+	data := "version: 1\nroot:\n  trunk: main\nchildren:\n"
 	ignores := ""
-	for _, r := range c.Repositories {
+	for _, r := range c.Children {
 		data += fmt.Sprintf("  - name: %s\n    path: %s\n    url: %s\n    trunk: main\n", r.Name, r.Path, r.URL)
 		ignores += "/" + r.Path + "/\n"
 	}
 	if n == 0 {
-		data = "version: 1\ntrunk: main\nrepositories: []\n"
+		data = "version: 1\nroot:\n  trunk: main\nchildren: []\n"
 	}
-	put(t, filepath.Join(root, "workspace.yml"), data)
+	put(t, filepath.Join(root, "vcm.yml"), data)
 	put(t, filepath.Join(root, ".gitignore"), ignores)
 	mustGit(t, root, "add", ".")
 	mustGit(t, root, "commit", "-m", "feat: workspace")
@@ -118,7 +119,7 @@ func TestCreateMergeLifecycle(t *testing.T) {
 		if _, err = os.Stat(r.Path); !os.IsNotExist(err) {
 			t.Fatalf("worktree remains: %s", r.Path)
 		}
-		if r.Repository.Name != "workspace" {
+		if r.Repository.Name != "root" {
 			if _, err = os.Stat(filepath.Join(r.Origin, "feature.txt")); err != nil {
 				t.Fatal(err)
 			}
@@ -154,8 +155,8 @@ func TestPostMergeFailureResumesWithoutDuplicate(t *testing.T) {
 	}
 	commitFile(t, m.Repositories[1].Path, "feature.txt", "new\n")
 	sentinel := filepath.Join(filepath.Dir(e.Root), "allow")
-	m.Repositories[0].Repository.Hooks = Hooks{"post-merge": {{ID: "gate", Command: "test -f " + sentinel}}}
-	m.Config.Hooks = m.Repositories[0].Repository.Hooks
+	m.Repositories[0].Repository.Hooks = Hooks{"post-merge": {{ID: "gate", Shell: "test -f " + sentinel}}}
+	m.Config.Root.Hooks = m.Repositories[0].Repository.Hooks
 	if err = e.Merge(m); err == nil {
 		t.Fatal("expected hook failure")
 	}
@@ -173,12 +174,12 @@ func TestPostMergeFailureResumesWithoutDuplicate(t *testing.T) {
 }
 func TestHooksDirtyFailureAndEnvironment(t *testing.T) {
 	e := fixture(t, 1)
-	e.Config.Repositories[0].Hooks = Hooks{"create": {{ID: "inspect", Command: `test "$VCM_REPOSITORY_NAME" = repo0; test "$PWD" = "$VCM_REPOSITORY_PATH"; test -d "$VCM_WORKSPACE"; echo preserved > generated.txt`}}}
+	e.Config.Children[0].Hooks = Hooks{"create": {{ID: "inspect", Shell: `test "$VCM_REPOSITORY_NAME" = repo0; test "$PWD" = "$VCM_REPOSITORY_PATH"; test -d "$VCM_ROOT"; echo preserved > generated.txt`}}}
 	configBytes, err := yaml.Marshal(e.Config)
 	if err != nil {
 		t.Fatal(err)
 	}
-	commitFile(t, e.Root, "workspace.yml", string(configBytes))
+	commitFile(t, e.Root, "vcm.yml", string(configBytes))
 	mustGit(t, e.Root, "push", "origin", "main")
 	m, err := e.Create("hook")
 	if err == nil || !strings.Contains(err.Error(), "dirty") {
@@ -195,6 +196,55 @@ func TestHooksDirtyFailureAndEnvironment(t *testing.T) {
 	}
 	if m.State != "ready" {
 		t.Fatal(m.State)
+	}
+}
+
+func TestTypedMultilineHooksUseConfiguredRunnersAndEnvironment(t *testing.T) {
+	e := fixture(t, 1)
+	runnerDir := t.TempDir()
+	python, err := exec.LookPath("python")
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.Config.Runners = Runners{Shell: filepath.Join(runnerDir, "custom-shell"), Python: filepath.Join(runnerDir, "custom-python")}
+	if err := os.Symlink("/bin/bash", e.Config.Runners.Shell); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(python, e.Config.Runners.Python); err != nil {
+		t.Fatal(err)
+	}
+	log := filepath.Join(filepath.Dir(e.Root), "hook-events")
+	t.Setenv("VCM_TEST_EVENTS", log)
+	e.Config.Children[0].Hooks = Hooks{"create": {
+		{ID: "shell-environment", Shell: `test "$VCM_REPOSITORY_NAME" = repo0
+test "$PWD" = "$VCM_REPOSITORY_PATH"
+test "$VCM_ROOT" != "$VCM_ROOT_ORIGIN"
+test "$VCM_HOOK_PHASE" = create
+test "$VCM_HOOK_ID" = shell-environment
+printf 'shell\n' >> "$VCM_TEST_EVENTS"
+`},
+		{ID: "python-environment", Python: `import os
+from pathlib import Path
+
+assert os.environ["VCM_REPOSITORY_NAME"] == "repo0"
+assert Path.cwd() == Path(os.environ["VCM_REPOSITORY_PATH"])
+assert os.environ["VCM_ROOT"] != os.environ["VCM_ROOT_ORIGIN"]
+assert os.environ["VCM_HOOK_PHASE"] == "create"
+assert os.environ["VCM_HOOK_ID"] == "python-environment"
+with open(os.environ["VCM_TEST_EVENTS"], "a") as stream:
+    stream.write("python\n")
+`},
+	}}
+	saveContractConfig(t, e)
+	if _, err := e.Create("typed-hooks"); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "shell\npython\n" {
+		t.Fatalf("hook output: %q", data)
 	}
 }
 func TestDropForcePreservesData(t *testing.T) {
