@@ -1,0 +1,42 @@
+version: '3'
+
+tasks:
+  verify:
+    desc: Run all local verification checks
+    cmds:
+      - task: verify:lint
+      - task: verify:test
+      - task: verify:quality
+
+  verify:lint:
+    desc: Run check-only linting against all files
+    cmds:
+      - lefthook run pre-commit --all-files --no-auto-install
+
+  verify:test:
+    desc: Run unit, race, and installer tests
+    cmds:
+      - go test -race ./...
+      - sh scripts/test-installer.sh
+
+  verify:quality:
+    desc: Run the pinned vulnerability scanner
+    cmds:
+      - go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+
+  build:
+    desc: Build the VCM binary
+    cmds:
+      - go build -o bin/vcm ./cmd/vcm
+
+  format:
+    desc: Format repository files
+    cmds:
+      - lefthook run format --all-files --no-auto-install
+
+  release:
+    desc: Build release archives
+    requires:
+      vars: [VERSION]
+    cmds:
+      - sh scripts/build-release.sh "{{.VERSION}}"

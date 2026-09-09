@@ -1,0 +1,16 @@
+pre-commit:
+  commands:
+    gofmt:
+      glob: '*.go'
+      run: test -z "$(gofmt -l {staged_files})"
+    go-vet:
+      run: go vet ./...
+    shell-syntax:
+      glob: '*.sh'
+      run: sh -c 'for script do sh -n "$script" || exit; done' -- {staged_files}
+
+format:
+  commands:
+    gofmt:
+      glob: '*.go'
+      run: gofmt -w {staged_files}
