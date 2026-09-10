@@ -11,7 +11,7 @@ import (
 	"testing"
 )
 
-func runOutput(t *testing.T, args ...string) (map[string]any, error) {
+func runOutput(t *testing.T, args ...string) (string, error) {
 	t.Helper()
 	old := os.Stdout
 	reader, writer, err := os.Pipe()
@@ -29,10 +29,19 @@ func runOutput(t *testing.T, args ...string) (map[string]any, error) {
 		t.Fatal(err)
 	}
 	if callErr != nil {
-		return nil, callErr
+		return string(data), callErr
 	}
-	var result map[string]any
-	if err := json.Unmarshal(data, &result); err != nil {
+	return string(data), nil
+}
+
+func runJSON[T any](t *testing.T, args ...string) (T, error) {
+	t.Helper()
+	var result T
+	data, err := runOutput(t, args...)
+	if err != nil {
+		return result, err
+	}
+	if err := json.Unmarshal([]byte(data), &result); err != nil {
 		t.Fatalf("invalid result %q: %v", data, err)
 	}
 	return result, nil
@@ -79,14 +88,19 @@ func TestVersionReportsBuildMetadata(t *testing.T) {
 	oldVersion, oldCommit := version, commit
 	version, commit = "test-release", "test-source"
 	defer func() { version, commit = oldVersion, oldCommit }()
-	for _, args := range [][]string{{"version"}, {"version", "--json"}} {
-		result, err := runOutput(t, args...)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if result["version"] != version || result["commit"] != commit {
-			t.Fatalf("incorrect build metadata: %v", result)
-		}
+	human, err := runOutput(t, "version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if human != "vcm test-release (test-source)\n" {
+		t.Fatalf("unexpected human version: %q", human)
+	}
+	result, err := runJSON[versionResult](t, "version", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Version != version || result.Commit != commit {
+		t.Fatalf("incorrect build metadata: %+v", result)
 	}
 }
 
@@ -128,27 +142,27 @@ func TestCommandRejectsUnexpectedArguments(t *testing.T) {
 func TestWorkspaceOverrideAndFlagsAfterCommand(t *testing.T) {
 	root := cliWorkspace(t)
 	for _, args := range [][]string{{"--workspace", root, "--json", "validate"}, {"validate", "--workspace", root, "--json"}, {"validate", "--workspace=" + root, "--json"}} {
-		result, err := runOutput(t, args...)
+		result, err := runJSON[validateResult](t, args...)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if result["valid"] != true || result["workspace"] != root {
-			t.Fatalf("wrong workspace: %v", result)
+		if !result.Valid || result.Workspace != root {
+			t.Fatalf("wrong workspace: %+v", result)
 		}
 	}
 }
 
 func TestDryRunCreatesNoResources(t *testing.T) {
 	root := cliWorkspace(t)
-	for _, args := range [][]string{{"bootstrap", "--dry-run", "--workspace", root}, {"create", "example-change", "--dry-run", "--workspace", root}, {"sync", "--force", "--dry-run", "--workspace", root}} {
-		result, err := runOutput(t, args...)
+	for _, args := range [][]string{{"bootstrap", "--dry-run", "--json", "--workspace", root}, {"create", "example-change", "--dry-run", "--json", "--workspace", root}, {"sync", "--force", "--dry-run", "--json", "--workspace", root}} {
+		result, err := runJSON[dryRunResult](t, args...)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if result["dry_run"] != true {
-			t.Fatalf("not a dry-run result: %v", result)
+		if !result.DryRun {
+			t.Fatalf("not a dry-run result: %+v", result)
 		}
-		if path, ok := result["workspace"].(string); ok && path != root {
+		if path := result.Workspace; path != "" && path != root {
 			if _, err := os.Lstat(path); !os.IsNotExist(err) {
 				t.Fatalf("dry run created %s", path)
 			}

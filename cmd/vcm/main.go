@@ -1,12 +1,14 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
-	"github.com/d1ys3nk0/vcm/internal/vcm"
+	"io"
 	"os"
+	"strconv"
 	"strings"
+
+	"github.com/d1ys3nk0/vcm/internal/vcm"
 )
 
 var version = "0.0.1-dev"
@@ -58,8 +60,8 @@ Notes:
 
 func run(args []string) error {
 	flags := flag.NewFlagSet("vcm", flag.ContinueOnError)
-	flags.SetOutput(os.Stderr)
-	flags.Usage = func() { fmt.Fprint(flags.Output(), helpText) }
+	flags.SetOutput(io.Discard)
+	flags.Usage = func() {}
 	workspace := ""
 	jsonOutput, dry, force := false, false, false
 	flags.StringVar(&workspace, "workspace", "", "workspace root")
@@ -85,25 +87,21 @@ func run(args []string) error {
 	}
 	if err := flags.Parse(options); err != nil {
 		if err == flag.ErrHelp {
+			fmt.Fprint(os.Stderr, helpText)
 			return nil
 		}
 		return err
 	}
 	if len(positionals) == 0 {
-		flags.Usage()
+		fmt.Fprint(os.Stderr, helpText)
 		return fmt.Errorf("command required")
 	}
 	command := positionals[0]
-	output := func(v any) error {
+	output := func(result any) error {
 		if jsonOutput {
-			return json.NewEncoder(os.Stdout).Encode(v)
+			return renderJSON(os.Stdout, result)
 		}
-		b, e := json.MarshalIndent(v, "", "  ")
-		if e != nil {
-			return e
-		}
-		fmt.Println(string(b))
-		return nil
+		return renderHuman(os.Stdout, result)
 	}
 	if len(positionals) > 2 {
 		return fmt.Errorf("too many arguments")
@@ -114,8 +112,11 @@ func run(args []string) error {
 	if force && command != "sync" && command != "drop" {
 		return fmt.Errorf("--force is only supported by sync and drop")
 	}
+	if dry && command != "bootstrap" && command != "sync" && command != "create" && command != "merge" && command != "drop" {
+		return fmt.Errorf("--dry-run is only supported by bootstrap, sync, create, merge, and drop")
+	}
 	if command == "version" {
-		return output(map[string]string{"version": version, "commit": commit})
+		return output(versionResult{Version: version, Commit: commit})
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -130,9 +131,6 @@ func run(args []string) error {
 	}
 	engine.DryRun = dry
 	engine.Force = force
-	if force && command != "sync" && command != "drop" {
-		return fmt.Errorf("--force is only supported by sync and drop")
-	}
 	arg := ""
 	if len(positionals) > 2 {
 		return fmt.Errorf("too many arguments")
@@ -143,14 +141,18 @@ func run(args []string) error {
 	var result any
 	switch command {
 	case "validate":
-		result = map[string]any{"valid": true, "workspace": engine.Root}
+		result = validateResult{Valid: true, Workspace: engine.Root}
 	case "list":
-		result, err = engine.All()
+		var manifests []*vcm.Manifest
+		manifests, err = engine.All()
+		if err == nil {
+			result = newListResults(manifests, cwd)
+		}
 	case "status":
 		var m *vcm.Manifest
 		m, err = engine.Select(arg, cwd)
 		if err == nil {
-			result = engine.Status(m)
+			result = newStatusResult(m, engine.Status(m))
 		}
 	case "bootstrap", "sync", "create", "merge", "drop":
 		var m *vcm.Manifest
@@ -169,9 +171,9 @@ func run(args []string) error {
 				if err != nil {
 					return err
 				}
-				return output(plan)
+				return output(newDryRunResult(plan))
 			}
-			return output(engine.Plan(command, m))
+			return output(newDryRunResult(engine.Plan(command, m)))
 		}
 		err = engine.Mutate(func() error {
 			if command == "merge" || command == "drop" {
@@ -195,10 +197,21 @@ func run(args []string) error {
 			}
 			return nil
 		})
-		if m != nil {
-			result = m
-		} else {
-			result = map[string]any{"command": command, "complete": err == nil}
+		switch command {
+		case "create":
+			if m != nil {
+				result = newCreateResult(m)
+			}
+		case "merge":
+			if m != nil {
+				result = newMergeResult(m)
+			}
+		case "drop":
+			if m != nil {
+				result = newDropResult(m)
+			}
+		default:
+			result = commandResult{Command: command, Complete: err == nil, Workspace: engine.Root}
 		}
 	default:
 		return fmt.Errorf("unknown command %q", command)
@@ -208,9 +221,35 @@ func run(args []string) error {
 	}
 	return output(result)
 }
-func main() {
-	if err := run(os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, "vcm:", err)
-		os.Exit(1)
+
+func requestsJSON(args []string) bool {
+	jsonOutput := false
+	for _, arg := range args {
+		if arg == "--json" || arg == "-json" {
+			jsonOutput = true
+			continue
+		}
+		for _, prefix := range []string{"--json=", "-json="} {
+			if strings.HasPrefix(arg, prefix) {
+				value, err := strconv.ParseBool(strings.TrimPrefix(arg, prefix))
+				if err != nil {
+					return true
+				}
+				jsonOutput = value
+			}
+		}
 	}
+	return jsonOutput
+}
+
+func runMain(args []string) int {
+	if err := run(args); err != nil {
+		writeError(os.Stderr, requestsJSON(args), err)
+		return 1
+	}
+	return 0
+}
+
+func main() {
+	os.Exit(runMain(os.Args[1:]))
 }

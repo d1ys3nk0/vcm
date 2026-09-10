@@ -23,6 +23,50 @@ type Engine struct {
 	DryRun bool
 }
 
+type RepositoryStatus struct {
+	Name               string
+	Path               string
+	Source             string
+	Target             string
+	Merged             bool
+	Removed            bool
+	Intent             string
+	Error              string
+	DirtyOrInterrupted string
+	OwnershipError     string
+	TargetChanged      bool
+}
+
+type PendingSyncStatus struct {
+	Path   string
+	Intent SyncIntentStatus
+	Error  string
+}
+
+type SyncIntentStatus struct {
+	TrunkBefore string
+	Repository  string
+	Path        string
+	Before      string
+	Target      string
+	Operation   string
+}
+
+type StatusReport struct {
+	Repositories      []RepositoryStatus
+	RecoveryDirectory string
+	PendingSync       []PendingSyncStatus
+}
+
+type OperationPlan struct {
+	Command   string
+	DryRun    bool
+	Force     bool
+	Tag       string
+	Workspace string
+	Resources []string
+}
+
 func Open(path string, out io.Writer) (*Engine, error) {
 	root, e := discover(path)
 	if e != nil {
@@ -517,35 +561,35 @@ func hooksFor(config Config, repository string) (Hooks, error) {
 	return nil, fmt.Errorf("repository %s is absent from current configuration", repository)
 }
 
-func (e *Engine) Status(m *Manifest) map[string]any {
-	repos := []map[string]any{}
+func (e *Engine) Status(m *Manifest) StatusReport {
+	repos := []RepositoryStatus{}
 	for _, r := range m.Repositories {
-		state := map[string]any{"name": r.Repository.Name, "path": r.Path, "merged": r.Merged, "removed": r.Removed, "intent": r.Intent}
+		state := RepositoryStatus{Name: r.Repository.Name, Path: r.Path, Merged: r.Merged, Removed: r.Removed, Intent: r.Intent}
 		if !r.Removed {
 			h, err := head(r.Path)
-			state["source"] = h
+			state.Source = h
 			if err != nil {
-				state["error"] = err.Error()
+				state.Error = err.Error()
 			}
 			if err = clean(r.Path); err != nil {
-				state["dirty_or_interrupted"] = err.Error()
+				state.DirtyOrInterrupted = err.Error()
 			}
 			if err = e.owned(m, &r); err != nil {
-				state["ownership_error"] = err.Error()
+				state.OwnershipError = err.Error()
 			}
 		}
 		target, err := head(r.Origin)
 		if err == nil {
-			state["target"] = target
-			state["target_changed"] = r.Merged && target != r.Target
+			state.Target = target
+			state.TargetChanged = r.Merged && target != r.Target
 		}
 		repos = append(repos, state)
 	}
-	return map[string]any{"manifest": m, "repositories": repos, "recovery_directory": filepath.Join(e.store.dir, "recovery"), "pending_sync": e.pendingSync()}
+	return StatusReport{Repositories: repos, RecoveryDirectory: filepath.Join(e.store.dir, "recovery"), PendingSync: e.pendingSync()}
 }
-func (e *Engine) CreatePlan(slug string) (map[string]any, error) {
+func (e *Engine) CreatePlan(slug string) (OperationPlan, error) {
 	if !slugPattern.MatchString(slug) {
-		return nil, fmt.Errorf("slug must use lowercase kebab-case with digits")
+		return OperationPlan{}, fmt.Errorf("slug must use lowercase kebab-case with digits")
 	}
 	tag := newTag(slug)
 	path := changeWorkspace(e.Root, tag)
@@ -554,11 +598,11 @@ func (e *Engine) CreatePlan(slug string) (map[string]any, error) {
 	for _, r := range ordered {
 		resources = append(resources, filepath.Join(path, r.Path))
 	}
-	return map[string]any{"command": "create", "dry_run": true, "tag": tag, "workspace": path, "resources": resources}, nil
+	return OperationPlan{Command: "create", DryRun: true, Tag: tag, Workspace: path, Resources: resources}, nil
 }
 
-func (e *Engine) pendingSync() []map[string]any {
-	out := []map[string]any{}
+func (e *Engine) pendingSync() []PendingSyncStatus {
+	out := []PendingSyncStatus{}
 	entries, _ := os.ReadDir(e.store.dir)
 	for _, entry := range entries {
 		if filepath.Ext(entry.Name()) != ".sync" {
@@ -566,9 +610,16 @@ func (e *Engine) pendingSync() []map[string]any {
 		}
 		path := filepath.Join(e.store.dir, entry.Name())
 		intent, err := readSync(path)
-		item := map[string]any{"path": path, "intent": intent}
+		item := PendingSyncStatus{Path: path, Intent: SyncIntentStatus{
+			TrunkBefore: intent.TrunkBefore,
+			Repository:  intent.Repository,
+			Path:        intent.Path,
+			Before:      intent.Before,
+			Target:      intent.Target,
+			Operation:   intent.Operation,
+		}}
 		if err != nil {
-			item["error"] = err.Error()
+			item.Error = err.Error()
 		}
 		out = append(out, item)
 	}

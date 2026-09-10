@@ -523,7 +523,7 @@ func originPathsCollide(origin, local, incoming string) bool {
 }
 
 // Plan exposes resources without performing Git writes, hooks, or state changes.
-func (e *Engine) Plan(command string, m *Manifest) map[string]any {
+func (e *Engine) Plan(command string, m *Manifest) OperationPlan {
 	paths := []string{e.Root}
 	for _, r := range e.Config.Children {
 		paths = append(paths, filepath.Join(e.Root, r.Path))
@@ -534,7 +534,7 @@ func (e *Engine) Plan(command string, m *Manifest) map[string]any {
 			paths = append(paths, r.Path)
 		}
 	}
-	return map[string]any{"command": command, "dry_run": true, "force": e.Force, "resources": paths}
+	return OperationPlan{Command: command, DryRun: true, Force: e.Force, Resources: paths}
 }
 
 func (e *Engine) checkCompleted(m *Manifest) error {

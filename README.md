@@ -59,6 +59,28 @@ Make and commit changes in the returned sibling root and its child worktrees. Us
 | `drop [change] [--force]` | Remove owned Change resources |
 | `version` | Show version and source commit |
 
-`--workspace PATH` selects a root; otherwise discovery walks upward for `vcm.yml` at a Git root. `--json` produces machine-readable results. Mutating commands support `--dry-run`, which executes no hooks. Flags may appear before or after command arguments. Change selection accepts a managed tag or root path. Without a selection, run from the managed Change itself. Slugs use lowercase kebab-case letters and digits; Change tags add a UTC timestamp and are also branch names.
+`--workspace PATH` selects a root; otherwise discovery walks upward for `vcm.yml` at a Git root. Commands produce concise human-readable text and tables by default. Every executable command accepts `--json` for a typed machine-readable result; help remains plain text. Mutating commands support `--dry-run`, which executes no hooks. Flags may appear before or after command arguments. Change selection accepts a managed tag or root path. Without a selection, run from the managed Change itself. Slugs use lowercase kebab-case letters and digits; Change tags add a UTC timestamp and are also branch names.
+
+For example, `vcm list` prints Changes newest first and marks the Change containing the current directory with `@`:
+
+```text
+   Change                       State  Repos       Age  Workspace
+@  260910120000-improve-search  ready  0/2 merged  2h   /work/product.260910120000-improve-search
+```
+
+JSON output is command-specific and does not expose the persisted manifest. Timestamps use RFC 3339 UTC and Git revisions remain unabbreviated. This typed JSON interface replaces the pre-0.1 ad-hoc payloads and is a breaking CLI output change; the persisted manifest and `vcm.yml` formats are unchanged.
+
+| Result | JSON shape |
+| --- | --- |
+| `validate` | `{valid, workspace}` |
+| `bootstrap`, `sync` | `{command, complete, workspace}` |
+| `create` | `{tag, slug, workspace, state, repositories:[{name, path, base}]}` |
+| `list` | `[{tag, slug, workspace, state, created_at, repository_count, merged_count, removed_count}]` |
+| `status` | `{tag, slug, workspace, state, created_at, repositories, hooks, backups, recovery_directory, pending_sync}` |
+| `merge` | `{tag, state, repositories:[{name, merged, source, target}], backups}` |
+| `drop` | `{tag, state, repositories:[{name, removed}], backups}` |
+| `version` | `{version, commit}` |
+| Any `--dry-run` | `{command, dry_run, force, tag?, workspace?, resources}` |
+| Error with `--json` | `{error:{message}}` on stderr with a nonzero exit status |
 
 Command results use stdout; progress and hook output use stderr. See the [configuration and hook reference](docs/configuration.md), [recovery guidance](docs/recovery.md), [contributor guide](CONTRIBUTING.md), and [security policy](SECURITY.md).
