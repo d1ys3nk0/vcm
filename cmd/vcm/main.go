@@ -12,9 +12,54 @@ import (
 var version = "0.0.1-dev"
 var commit = "unknown"
 
+const helpText = `VCM manages a Git workspace root and its child repositories as one Change.
+
+Usage:
+  vcm [global options] <command> [arguments]
+
+Commands:
+  validate             Check vcm.yml and the repository dependency graph.
+  bootstrap            Clone missing configured repositories and verify existing origins.
+  sync                 Fast-forward configured workspace and child trunks from origin.
+  create <slug>        Synchronize origins and create an isolated Change workspace.
+  list                 List recorded Changes.
+  status [change]      Show a Change's lifecycle, hooks, merge, and recovery state.
+  merge [change]       Run merge hooks and squash-merge child repositories, then the root.
+  drop [change]        Remove the resources owned by a completed or discarded Change.
+  version              Print the VCM version and source commit.
+
+Global options:
+  --workspace PATH     Workspace root. By default, VCM searches upward from the current
+                       directory for vcm.yml at a Git root.
+  --json               Emit machine-readable JSON to stdout.
+  --dry-run            Show the operation plan without changing files or running hooks.
+                       Supported by bootstrap, sync, create, merge, and drop.
+  --force              For sync, reset divergent child trunks after creating recovery backups.
+                       For drop, preserve recovery backups before discarding changes.
+  -h, --help           Show this help.
+
+Change selection:
+  The optional [change] is a managed Change tag or its root workspace path. If it is
+  omitted, run status, merge, or drop from inside that Change's root workspace.
+
+Examples:
+  vcm validate
+  vcm bootstrap --workspace /work/product
+  vcm create improve-search
+  vcm status 260910120000-improve-search
+  vcm merge --dry-run
+  vcm drop 260910120000-improve-search --force
+
+Notes:
+  Flags may appear before or after the command. Slugs use lowercase kebab-case letters
+  and digits. Commands that change state should be previewed with --dry-run; merge does
+  not fetch, pull, or push.
+`
+
 func run(args []string) error {
 	flags := flag.NewFlagSet("vcm", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
+	flags.Usage = func() { fmt.Fprint(flags.Output(), helpText) }
 	workspace := ""
 	jsonOutput, dry, force := false, false, false
 	flags.StringVar(&workspace, "workspace", "", "workspace root")

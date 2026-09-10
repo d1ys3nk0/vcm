@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -36,6 +38,26 @@ func runOutput(t *testing.T, args ...string) (map[string]any, error) {
 	return result, nil
 }
 
+func runErrorOutput(t *testing.T, args ...string) (string, error) {
+	t.Helper()
+	old := os.Stderr
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = writer
+	defer func() { os.Stderr = old; reader.Close(); writer.Close() }()
+	callErr := run(args)
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	if _, err := io.Copy(&output, reader); err != nil {
+		t.Fatal(err)
+	}
+	return output.String(), callErr
+}
+
 func cliWorkspace(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
@@ -64,6 +86,21 @@ func TestVersionReportsBuildMetadata(t *testing.T) {
 		}
 		if result["version"] != version || result["commit"] != commit {
 			t.Fatalf("incorrect build metadata: %v", result)
+		}
+	}
+}
+
+func TestHelpDocumentsEveryCommandAndOption(t *testing.T) {
+	output, err := runErrorOutput(t, "--help")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, phrase := range []string{
+		"validate", "bootstrap", "sync", "create <slug>", "list", "status [change]", "merge [change]", "drop [change]", "version",
+		"--workspace PATH", "--json", "--dry-run", "--force", "Change selection:", "Examples:",
+	} {
+		if !strings.Contains(output, phrase) {
+			t.Errorf("help is missing %q:\n%s", phrase, output)
 		}
 	}
 }
