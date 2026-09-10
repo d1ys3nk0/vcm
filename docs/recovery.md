@@ -1,8 +1,10 @@
 # Recovery
 
-The `vcm.yml` contract is a hard cut. Before upgrading, complete or drop every Change managed by a VCM version that used `workspace.yml` or `command` hooks. New VCM versions reject those recovery manifest shapes and cannot resume them.
+State version 1 stores the lifecycle and recovery data required to resume a Change. The `vcm.yml` schema is also version 1; these are separate contracts.
 
-Start with `vcm status <change>`. Keep the original repository set and Change paths intact while repairing an interrupted operation. Lifecycle manifests under the workspace Git common directory record configuration, ownership, bases, hooks, merge targets, and cleanup progress. These local files are operational state, not project artifacts; do not execute them or edit them to bypass ownership checks.
+Start with `vcm status <change>`. Keep the selected repository set and Change paths intact while repairing an interrupted operation. Lifecycle state under the workspace Git common directory records only selected repository names, ownership, bases, hook outcomes, merge checkpoints, backups, and cleanup progress. VCM derives the Change identity and paths from the state filename and resolves repository paths, trunks, URLs, hooks, runners, dependencies, and ordering from the current `vcm.yml`. These local files are operational state, not project artifacts; do not execute them or edit them to bypass ownership checks.
+
+Repositories added to `vcm.yml` after a Change was created are not part of that Change and are skipped by status, merge, and drop. If a selected repository is removed or renamed in configuration, status reports it and create recovery, merge, and drop stop. Restore that repository's configuration entry before retrying. Other current configuration changes take effect immediately, so inspect hook, runner, path, remote, trunk, and dependency changes before resuming an operation.
 
 VCM serializes mutations with an operating-system workspace lock. If another invocation is active, let it finish. The lock is released when its process exits; the lock file may remain and should not be deleted to bypass an active lock.
 

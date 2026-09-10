@@ -38,6 +38,8 @@ Global options:
                        Supported by bootstrap, sync, create, merge, and drop.
   --force              For sync, reset divergent child trunks after creating recovery backups.
                        For drop, preserve recovery backups before discarding changes.
+  --only NAMES         For create, include exactly these comma-separated child repositories.
+  --except NAMES       For create, exclude these comma-separated child repositories.
   -h, --help           Show this help.
 
 Change selection:
@@ -48,6 +50,8 @@ Examples:
   vcm validate
   vcm bootstrap --workspace /work/product
   vcm create improve-search
+  vcm create improve-search --only core,web
+  vcm create improve-search --except devtools
   vcm status 260910120000-improve-search
   vcm merge --dry-run
   vcm drop 260910120000-improve-search --force
@@ -62,22 +66,24 @@ func run(args []string) error {
 	flags := flag.NewFlagSet("vcm", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	flags.Usage = func() {}
-	workspace := ""
+	workspace, only, except := "", "", ""
 	jsonOutput, dry, force := false, false, false
 	flags.StringVar(&workspace, "workspace", "", "workspace root")
 	flags.BoolVar(&jsonOutput, "json", false, "machine-readable output")
 	flags.BoolVar(&dry, "dry-run", false, "show operation plan")
 	flags.BoolVar(&force, "force", false, "preserve recovery backups and discard changes")
+	flags.StringVar(&only, "only", "", "selected child repositories")
+	flags.StringVar(&except, "except", "", "excluded child repositories")
 	// Permit global options before or after the command using the standard flag parser.
 	options := []string{}
 	positionals := []string{}
 	for i := 0; i < len(args); i++ {
 		if strings.HasPrefix(args[i], "-") {
 			options = append(options, args[i])
-			if args[i] == "--workspace" || args[i] == "-workspace" {
+			if args[i] == "--workspace" || args[i] == "-workspace" || args[i] == "--only" || args[i] == "-only" || args[i] == "--except" || args[i] == "-except" {
 				i++
 				if i == len(args) {
-					return fmt.Errorf("--workspace requires a path")
+					return fmt.Errorf("%s requires a value", options[len(options)-1])
 				}
 				options = append(options, args[i])
 			}
@@ -111,6 +117,20 @@ func run(args []string) error {
 	}
 	if force && command != "sync" && command != "drop" {
 		return fmt.Errorf("--force is only supported by sync and drop")
+	}
+	selectionFlags := map[string]bool{}
+	flags.Visit(func(f *flag.Flag) { selectionFlags[f.Name] = true })
+	if (selectionFlags["only"] || selectionFlags["except"]) && command != "create" {
+		return fmt.Errorf("--only and --except are only supported by create")
+	}
+	if selectionFlags["only"] && selectionFlags["except"] {
+		return fmt.Errorf("--only and --except are mutually exclusive")
+	}
+	if selectionFlags["only"] && only == "" {
+		return fmt.Errorf("--only contains a blank repository name")
+	}
+	if selectionFlags["except"] && except == "" {
+		return fmt.Errorf("--except contains a blank repository name")
 	}
 	if dry && command != "bootstrap" && command != "sync" && command != "create" && command != "merge" && command != "drop" {
 		return fmt.Errorf("--dry-run is only supported by bootstrap, sync, create, merge, and drop")
@@ -167,7 +187,7 @@ func run(args []string) error {
 		}
 		if dry {
 			if command == "create" {
-				plan, err := engine.CreatePlan(arg)
+				plan, err := engine.CreatePlanSelected(arg, only, except)
 				if err != nil {
 					return err
 				}
@@ -188,7 +208,7 @@ func run(args []string) error {
 			case "sync":
 				return engine.Sync()
 			case "create":
-				m, err = engine.Create(arg)
+				m, err = engine.CreateSelected(arg, only, except)
 				return err
 			case "merge":
 				return engine.Merge(m)

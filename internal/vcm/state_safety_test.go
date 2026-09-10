@@ -21,8 +21,8 @@ func safetyFixture(t *testing.T) (store, *Manifest) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := store{filepath.Join(common, "vcm")}
 	config := Config{Version: 1, Root: Root{Trunk: "main"}, Children: []Repository{{Name: "api", Path: "repos/api", URL: "https://example.invalid/api.git", Trunk: "main"}}}
+	s := store{dir: filepath.Join(common, "vcm"), root: root, config: config}
 	tag := newTag("safety")
 	change := changeWorkspace(root, tag)
 	m := &Manifest{Version: 1, Tag: tag, Slug: "safety", Workspace: change, Origin: root, Config: config, State: "creating", Hooks: map[string]HookState{}}
@@ -35,14 +35,9 @@ func TestManifestRejectsUnsafeOwnership(t *testing.T) {
 		"owned without base":             func(m *Manifest) { m.Repositories[1].Owned = true },
 		"merged without revisions":       func(m *Manifest) { m.Repositories[1].Merged = true },
 		"merge without intent revisions": func(m *Manifest) { m.Repositories[1].Intent = "merge" },
-		"workspace":                      func(m *Manifest) { m.Workspace = filepath.Dir(m.Origin) },
-		"origin":                         func(m *Manifest) { m.Origin = filepath.Dir(m.Origin) },
-		"repository path":                func(m *Manifest) { m.Repositories[1].Path = m.Origin },
-		"repository origin":              func(m *Manifest) { m.Repositories[1].Origin = m.Origin },
-		"repository metadata":            func(m *Manifest) { m.Repositories[1].Repository.Trunk = "other" },
-		"missing repository":             func(m *Manifest) { m.Repositories = m.Repositories[:1] },
+		"missing root":                   func(m *Manifest) { m.Repositories = m.Repositories[1:] },
+		"invalid repository identity":    func(m *Manifest) { m.Repositories[1].Repository.Name = "Not Valid" },
 		"traversal identity":             func(m *Manifest) { m.Tag = "../outside" },
-		"slug mismatch":                  func(m *Manifest) { m.Slug = "different" },
 		"invalid revision":               func(m *Manifest) { m.Repositories[1].Base = "HEAD" },
 		"invalid hook key":               func(m *Manifest) { m.Hooks["api/create/not_valid"] = HookState{Status: "complete"} },
 	}
@@ -67,12 +62,24 @@ func TestManifestRoundTripAndStrictDecoding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var persisted Manifest
+	var persisted map[string]any
 	if err := json.Unmarshal(raw, &persisted); err != nil {
 		t.Fatal(err)
 	}
-	if persisted.Config.Runners != (Runners{Shell: "bash", Python: "python"}) {
-		t.Fatalf("manifest omitted runner defaults: %+v", persisted.Config.Runners)
+	if persisted["version"] != float64(1) {
+		t.Fatalf("state version = %v, want 1", persisted["version"])
+	}
+	for _, field := range []string{"tag", "slug", "workspace", "origin", "config"} {
+		if _, ok := persisted[field]; ok {
+			t.Fatalf("manifest persisted derived or configured field %q", field)
+		}
+	}
+	repositories := persisted["repositories"].(map[string]any)
+	api := repositories["api"].(map[string]any)
+	for _, field := range []string{"repository", "name", "path", "origin", "owned", "merged", "removed"} {
+		if _, ok := api[field]; ok {
+			t.Fatalf("manifest persisted redundant repository field %q", field)
+		}
 	}
 	got, err := s.load(m.Tag)
 	if err != nil {
@@ -90,11 +97,21 @@ func TestManifestRoundTripAndStrictDecoding(t *testing.T) {
 			return b
 		},
 		"trailing object": func(b []byte) []byte { return append(b, []byte("{}")...) },
-		"blank runner": func(b []byte) []byte {
+		"full manifest fields": func(b []byte) []byte {
 			var data map[string]any
 			_ = json.Unmarshal(b, &data)
-			config := data["config"].(map[string]any)
-			config["runners"].(map[string]any)["python"] = ""
+			data["tag"] = m.Tag
+			data["slug"] = m.Slug
+			data["workspace"] = m.Workspace
+			data["origin"] = m.Origin
+			data["config"] = map[string]any{"version": 1}
+			b, _ = json.Marshal(data)
+			return b
+		},
+		"invalid version": func(b []byte) []byte {
+			var data map[string]any
+			_ = json.Unmarshal(b, &data)
+			data["version"] = float64(2)
 			b, _ = json.Marshal(data)
 			return b
 		},
@@ -117,19 +134,10 @@ func TestManifestRoundTripAndStrictDecoding(t *testing.T) {
 	}
 }
 
-func TestManifestAcceptsLegacyWorkspacePath(t *testing.T) {
-	s, m := safetyFixture(t)
-	m.Workspace = legacyChangeWorkspace(m.Origin, m.Tag)
-	m.Repositories[0].Path = m.Workspace
-	m.Repositories[1].Path = filepath.Join(m.Workspace, m.Repositories[1].Repository.Path)
-	if err := s.save(m); err != nil {
-		t.Fatalf("legacy workspace path rejected: %v", err)
-	}
-}
-
-func TestManifestDoesNotPersistConfigurationHooks(t *testing.T) {
+func TestManifestDoesNotPersistConfiguration(t *testing.T) {
 	s, m := safetyFixture(t)
 	m.Config.Root.Hooks = Hooks{"create": {{ID: "current", Shell: "true"}}}
+	s.config = m.Config
 	if err := s.save(m); err != nil {
 		t.Fatal(err)
 	}
@@ -141,16 +149,33 @@ func TestManifestDoesNotPersistConfigurationHooks(t *testing.T) {
 	if err = json.Unmarshal(raw, &persisted); err != nil {
 		t.Fatal(err)
 	}
-	root := persisted["config"].(map[string]any)["root"].(map[string]any)
-	if _, ok := root["hooks"]; ok {
-		t.Fatal("manifest persisted root hooks")
+	if _, ok := persisted["config"]; ok {
+		t.Fatal("manifest persisted configuration")
 	}
 	loaded, err := s.load(m.Tag)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.Config.Root.Hooks != nil {
-		t.Fatal("manifest restored root hooks")
+	if len(loaded.Config.Root.Hooks["create"]) != 1 {
+		t.Fatal("manifest did not hydrate current hooks")
+	}
+}
+
+func TestManifestHydratesOnlyRecordedRepositoriesFromCurrentConfig(t *testing.T) {
+	s, m := safetyFixture(t)
+	if err := s.save(m); err != nil {
+		t.Fatal(err)
+	}
+	s.config.Children = append(s.config.Children, Repository{Name: "new-child", Path: "repos/new", URL: "https://example.invalid/new.git", Trunk: "main"})
+	loaded, err := s.load(m.Tag)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Repositories) != 2 || loaded.Repositories[1].Repository.Name != "api" {
+		t.Fatalf("newly configured repository entered existing Change: %+v", loaded.Repositories)
+	}
+	if loaded.Repositories[1].Repository.Trunk != "main" || loaded.Repositories[1].Path != filepath.Join(loaded.Workspace, "repos/api") {
+		t.Fatalf("recorded repository was not hydrated from current configuration: %+v", loaded.Repositories[1])
 	}
 }
 
@@ -207,13 +232,16 @@ func TestStateRejectsSymlinksAndBroadPermissions(t *testing.T) {
 			t.Fatal("public manifest accepted")
 		}
 	})
-	t.Run("workspace symlink", func(t *testing.T) {
+	t.Run("derived workspace symlink", func(t *testing.T) {
 		s, m := safetyFixture(t)
+		if err := s.save(m); err != nil {
+			t.Fatal(err)
+		}
 		if err := os.Symlink(t.TempDir(), m.Workspace); err != nil {
 			t.Fatal(err)
 		}
-		if err := s.save(m); err == nil {
-			t.Fatal("symlink workspace accepted")
+		if _, err := s.load(m.Tag); err == nil {
+			t.Fatal("symlink at derived workspace path accepted")
 		}
 	})
 }

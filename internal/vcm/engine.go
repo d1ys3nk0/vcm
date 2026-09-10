@@ -84,7 +84,7 @@ func Open(path string, out io.Writer) (*Engine, error) {
 	if e != nil {
 		return nil, e
 	}
-	return &Engine{Root: origin, Config: c, store: store{filepath.Join(common, "vcm")}, Out: out}, nil
+	return &Engine{Root: origin, Config: c, store: store{dir: filepath.Join(common, "vcm"), root: origin, config: c}, Out: out}, nil
 }
 func (e *Engine) All() ([]*Manifest, error) { return e.store.all() }
 func (e *Engine) Select(selector, cwd string) (*Manifest, error) {
@@ -120,6 +120,7 @@ func (e *Engine) Mutate(fn func() error) error {
 		return err
 	}
 	e.Config = current
+	e.store.config = current
 	return fn()
 }
 func (e *Engine) Bootstrap() error {
@@ -294,8 +295,120 @@ func (e *Engine) Sync() error {
 	return nil
 }
 func (e *Engine) Create(slug string) (*Manifest, error) {
+	return e.CreateSelected(slug, "", "")
+}
+
+func parseSelectionList(flag, value string) ([]string, error) {
+	if value == "" {
+		return nil, nil
+	}
+	seen := map[string]bool{}
+	parts := strings.Split(value, ",")
+	for _, name := range parts {
+		if strings.TrimSpace(name) == "" {
+			return nil, fmt.Errorf("--%s contains a blank repository name", flag)
+		}
+		if name != strings.TrimSpace(name) {
+			return nil, fmt.Errorf("--%s repository names must not contain surrounding whitespace", flag)
+		}
+		if name == "root" {
+			return nil, fmt.Errorf("--%s must not include root; the root worktree is always selected", flag)
+		}
+		if seen[name] {
+			return nil, fmt.Errorf("--%s contains duplicate repository %s", flag, name)
+		}
+		seen[name] = true
+	}
+	return parts, nil
+}
+
+func (e *Engine) selectedRepositories(only, except string) ([]Repository, error) {
+	if only != "" && except != "" {
+		return nil, fmt.Errorf("--only and --except are mutually exclusive")
+	}
+	flag, raw := "only", only
+	if except != "" {
+		flag, raw = "except", except
+	}
+	names, err := parseSelectionList(flag, raw)
+	if err != nil {
+		return nil, err
+	}
+	requested := map[string]bool{}
+	for _, name := range names {
+		requested[name] = true
+	}
+	configured := map[string]bool{}
+	for _, repository := range e.Config.Children {
+		configured[repository.Name] = true
+	}
+	for name := range requested {
+		if !configured[name] {
+			return nil, fmt.Errorf("unknown repository %q in --%s", name, flag)
+		}
+	}
+	ordered, _ := e.Config.Order()
+	selected := make([]Repository, 0, len(ordered))
+	selectedNames := map[string]bool{}
+	for _, repository := range ordered {
+		include := raw == "" || only != "" && requested[repository.Name] || except != "" && !requested[repository.Name]
+		if include {
+			selected = append(selected, repository)
+			selectedNames[repository.Name] = true
+		}
+	}
+	for _, repository := range selected {
+		for _, dependency := range repository.DependsOn {
+			if !selectedNames[dependency] {
+				return nil, fmt.Errorf("repository %s depends on unselected repository %s", repository.Name, dependency)
+			}
+		}
+	}
+	return selected, nil
+}
+
+func selectedNames(m *Manifest) map[string]bool {
+	names := make(map[string]bool, len(m.Repositories))
+	for _, repository := range m.Repositories {
+		names[repository.Repository.Name] = true
+	}
+	return names
+}
+
+func sameSelection(m *Manifest, selected []Repository) bool {
+	want := map[string]bool{"root": true}
+	for _, repository := range selected {
+		want[repository.Name] = true
+	}
+	got := selectedNames(m)
+	return reflect.DeepEqual(got, want)
+}
+
+func (e *Engine) ensureCurrentSelection(m *Manifest) error {
+	if len(m.Missing) > 0 {
+		return fmt.Errorf("selected repository %s is absent from current configuration; restore its vcm.yml entry before retrying", strings.Join(m.Missing, ", "))
+	}
+	names := selectedNames(m)
+	for _, repository := range e.Config.Children {
+		if !names[repository.Name] {
+			continue
+		}
+		for _, dependency := range repository.DependsOn {
+			if !names[dependency] {
+				return fmt.Errorf("repository %s depends on unselected repository %s", repository.Name, dependency)
+			}
+		}
+	}
+	return nil
+}
+
+func (e *Engine) CreateSelected(slug, only, except string) (*Manifest, error) {
 	if !slugPattern.MatchString(slug) {
 		return nil, fmt.Errorf("slug must use lowercase kebab-case with digits")
+	}
+	selected, err := e.selectedRepositories(only, except)
+	if err != nil {
+		return nil, err
 	}
 	all, err := e.All()
 	if err != nil {
@@ -303,6 +416,12 @@ func (e *Engine) Create(slug string) (*Manifest, error) {
 	}
 	for _, m := range all {
 		if m.Slug == slug && m.State == "creating" {
+			if err := e.ensureCurrentSelection(m); err != nil {
+				return m, err
+			}
+			if !sameSelection(m, selected) {
+				return m, fmt.Errorf("create selection does not match the interrupted Change; retry with the originally selected repositories")
+			}
 			return m, e.resumeCreate(m)
 		}
 		if m.Slug == slug && m.State != "dropped" {
@@ -317,8 +436,7 @@ func (e *Engine) Create(slug string) (*Manifest, error) {
 	}
 	m := &Manifest{Version: 1, Tag: tag, Slug: slug, Workspace: path, Origin: e.Root, Config: e.Config, State: "creating", Hooks: map[string]HookState{}}
 	m.Repositories = append(m.Repositories, RepoState{Repository: Repository{Name: "root", URL: rootURL, Trunk: e.Config.Root.Trunk, Hooks: e.Config.Root.Hooks}, Origin: e.Root, Path: path})
-	ordered, _ := e.Config.Order()
-	for _, r := range ordered {
+	for _, r := range selected {
 		m.Repositories = append(m.Repositories, RepoState{Repository: r, Origin: filepath.Join(e.Root, r.Path), Path: filepath.Join(path, r.Path)})
 	}
 	if err = e.prepareCreate(m); err != nil {
@@ -503,9 +621,9 @@ func (e *Engine) hooks(m *Manifest, r *RepoState, phase string) error {
 		}
 		var cmd *exec.Cmd
 		if h.Shell != "" {
-			cmd = exec.CommandContext(context.Background(), m.Config.Runners.Shell, "-eu", "-o", "pipefail", "-c", h.Shell)
+			cmd = exec.CommandContext(context.Background(), current.Runners.Shell, "-eu", "-o", "pipefail", "-c", h.Shell)
 		} else {
-			cmd = exec.CommandContext(context.Background(), m.Config.Runners.Python, "-c", h.Python)
+			cmd = exec.CommandContext(context.Background(), current.Runners.Python, "-c", h.Python)
 		}
 		cmd.Dir = r.Path
 		cmd.Env = append(os.Environ(), "VCM_CHANGE_TAG="+m.Tag, "VCM_CHANGE_SLUG="+m.Slug, "VCM_ROOT="+m.Workspace, "VCM_ROOT_ORIGIN="+m.Origin, "VCM_REPOSITORY_NAME="+r.Repository.Name, "VCM_REPOSITORY_ORIGIN="+r.Origin, "VCM_REPOSITORY_PATH="+r.Path, "VCM_HOOK_PHASE="+phase, "VCM_HOOK_ID="+h.ID)
@@ -565,6 +683,11 @@ func (e *Engine) Status(m *Manifest) StatusReport {
 	repos := []RepositoryStatus{}
 	for _, r := range m.Repositories {
 		state := RepositoryStatus{Name: r.Repository.Name, Path: r.Path, Merged: r.Merged, Removed: r.Removed, Intent: r.Intent}
+		if r.Repository.Name != "root" && r.Path == "" {
+			state.Error = fmt.Sprintf("selected repository %s is absent from current configuration; restore its vcm.yml entry", r.Repository.Name)
+			repos = append(repos, state)
+			continue
+		}
 		if !r.Removed {
 			h, err := head(r.Path)
 			state.Source = h
@@ -588,14 +711,21 @@ func (e *Engine) Status(m *Manifest) StatusReport {
 	return StatusReport{Repositories: repos, RecoveryDirectory: filepath.Join(e.store.dir, "recovery"), PendingSync: e.pendingSync()}
 }
 func (e *Engine) CreatePlan(slug string) (OperationPlan, error) {
+	return e.CreatePlanSelected(slug, "", "")
+}
+
+func (e *Engine) CreatePlanSelected(slug, only, except string) (OperationPlan, error) {
 	if !slugPattern.MatchString(slug) {
 		return OperationPlan{}, fmt.Errorf("slug must use lowercase kebab-case with digits")
 	}
 	tag := newTag(slug)
 	path := changeWorkspace(e.Root, tag)
 	resources := []string{path}
-	ordered, _ := e.Config.Order()
-	for _, r := range ordered {
+	selected, err := e.selectedRepositories(only, except)
+	if err != nil {
+		return OperationPlan{}, err
+	}
+	for _, r := range selected {
 		resources = append(resources, filepath.Join(path, r.Path))
 	}
 	return OperationPlan{Command: "create", DryRun: true, Tag: tag, Workspace: path, Resources: resources}, nil

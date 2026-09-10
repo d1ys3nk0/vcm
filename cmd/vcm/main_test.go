@@ -111,11 +111,44 @@ func TestHelpDocumentsEveryCommandAndOption(t *testing.T) {
 	}
 	for _, phrase := range []string{
 		"validate", "bootstrap", "sync", "create <slug>", "list", "status [change]", "merge [change]", "drop [change]", "version",
-		"--workspace PATH", "--json", "--dry-run", "--force", "Change selection:", "Examples:",
+		"--workspace PATH", "--json", "--dry-run", "--force", "--only NAMES", "--except NAMES", "Change selection:", "Examples:",
 	} {
 		if !strings.Contains(output, phrase) {
 			t.Errorf("help is missing %q:\n%s", phrase, output)
 		}
+	}
+}
+
+func TestCreateSelectionFlags(t *testing.T) {
+	root := cliWorkspace(t)
+	result, err := runJSON[dryRunResult](t, "create", "partial", "--only", "api", "--dry-run", "--json", "--workspace", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Resources) != 2 || result.Resources[1] != filepath.Join(result.Workspace, "repos/api") {
+		t.Fatalf("--only dry-run resources: %+v", result.Resources)
+	}
+	result, err = runJSON[dryRunResult](t, "create", "root-only", "--except=api", "--dry-run", "--json", "--workspace", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Resources) != 1 || result.Resources[0] != result.Workspace {
+		t.Fatalf("--except dry-run resources: %+v", result.Resources)
+	}
+	for name, args := range map[string][]string{
+		"unsupported": {"status", "--only", "api", "--workspace", root},
+		"both":        {"create", "bad", "--only", "api", "--except", "api", "--workspace", root},
+		"empty":       {"create", "bad", "--only=", "--workspace", root},
+		"blank":       {"create", "bad", "--only", "api,", "--workspace", root},
+		"duplicate":   {"create", "bad", "--only", "api,api", "--workspace", root},
+		"root":        {"create", "bad", "--only", "root", "--workspace", root},
+		"unknown":     {"create", "bad", "--only", "web", "--workspace", root},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := runOutput(t, args...); err == nil {
+				t.Fatal("invalid selection flags accepted")
+			}
+		})
 	}
 }
 

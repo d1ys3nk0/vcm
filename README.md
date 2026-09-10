@@ -38,6 +38,8 @@ git commit -m 'chore: configure VCM workspace'
 vcm validate
 vcm bootstrap
 vcm create improve-search
+# Or create the root plus an exact subset of children:
+vcm create improve-search --only api
 vcm list
 ```
 
@@ -52,14 +54,14 @@ Make and commit changes in the returned sibling root and its child worktrees. Us
 | `validate` | Check configuration and dependency graph |
 | `bootstrap` | Clone missing repositories and validate existing origins |
 | `sync [--force]` | Fast-forward child trunks; force resets with recovery backups |
-| `create <slug>` | Synchronize origins and create a complete Change |
+| `create <slug> [--only names] [--except names]` | Synchronize origins and create a full or partial Change |
 | `list` | List recorded Changes |
 | `status [change]` | Inspect lifecycle, hooks, merge, and recovery state |
 | `merge [change]` | Run hooks and squash-merge child repositories, then root |
 | `drop [change] [--force]` | Remove owned Change resources |
 | `version` | Show version and source commit |
 
-`--workspace PATH` selects a root; otherwise discovery walks upward for `vcm.yml` at a Git root. Commands produce concise human-readable text and tables by default. Every executable command accepts `--json` for a typed machine-readable result; help remains plain text. Mutating commands support `--dry-run`, which executes no hooks. Flags may appear before or after command arguments. Change selection accepts a managed tag or root path. Without a selection, run from the managed Change itself. Slugs use lowercase kebab-case letters and digits; Change tags add a UTC timestamp and are also branch names.
+`--workspace PATH` selects a root; otherwise discovery walks upward for `vcm.yml` at a Git root. Commands produce concise human-readable text and tables by default. Every executable command accepts `--json` for a typed machine-readable result; help remains plain text. Mutating commands support `--dry-run`, which executes no hooks. Flags may appear before or after command arguments. `create --only core,web` selects exactly those children; `create --except devtools` selects every configured child except `devtools`. The root is always selected, the flags are mutually exclusive, and a selected repository whose dependency is not selected is rejected. Excluding every child creates a root-only Change. Change selection accepts a managed tag or root path. Without a selection, run from the managed Change itself. Slugs use lowercase kebab-case letters and digits; Change tags add a UTC timestamp and are also branch names.
 
 For example, `vcm list` prints Changes newest first and marks the Change containing the current directory with `@`:
 
@@ -68,7 +70,7 @@ For example, `vcm list` prints Changes newest first and marks the Change contain
 @  260910120000-improve-search  ready  0/2 merged  2h   /work/product.260910120000-improve-search
 ```
 
-JSON output is command-specific and does not expose the persisted manifest. Timestamps use RFC 3339 UTC and Git revisions remain unabbreviated. This typed JSON interface replaces the pre-0.1 ad-hoc payloads and is a breaking CLI output change; the persisted manifest and `vcm.yml` formats are unchanged.
+JSON output is command-specific and does not expose the persisted state. Timestamps use RFC 3339 UTC and Git revisions remain unabbreviated. State version 1 records only lifecycle and recovery checkpoints keyed by the repositories selected for the Change. Configuration and derived identities are resolved from the current `vcm.yml` and state filename instead of being copied into state. The `vcm.yml` format is also version 1.
 
 | Result | JSON shape |
 | --- | --- |

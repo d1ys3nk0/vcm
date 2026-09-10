@@ -162,6 +162,141 @@ func TestCreatePreflightsAllRepositoriesBeforeCreatingWorktrees(t *testing.T) {
 	}
 }
 
+func TestCreateSelectsExactRepositories(t *testing.T) {
+	t.Run("only", func(t *testing.T) {
+		e := fixture(t, 2)
+		log := filepath.Join(filepath.Dir(e.Root), "selected-hooks")
+		t.Setenv("VCM_TEST_SELECTED_HOOKS", log)
+		for i := range e.Config.Children {
+			e.Config.Children[i].Hooks = Hooks{"create": {{ID: "record", Shell: `printf '%s\n' "$VCM_REPOSITORY_NAME" >> "$VCM_TEST_SELECTED_HOOKS"`}}}
+		}
+		saveContractConfig(t, e)
+		m, err := e.CreateSelected("partial", "repo1", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(m.Repositories) != 2 || m.Repositories[0].Repository.Name != "root" || m.Repositories[1].Repository.Name != "repo1" {
+			t.Fatalf("unexpected repository selection: %+v", m.Repositories)
+		}
+		if _, err := os.Lstat(filepath.Join(m.Workspace, "repo0")); !os.IsNotExist(err) {
+			t.Fatal("unselected repository worktree was created")
+		}
+		data, err := os.ReadFile(log)
+		if err != nil || string(data) != "repo1\n" {
+			t.Fatalf("unexpected selected hook output %q: %v", data, err)
+		}
+		commitFile(t, m.Repositories[1].Path, "partial.txt", "selected\n")
+		if err = e.Merge(m); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = os.Stat(filepath.Join(m.Repositories[1].Origin, "partial.txt")); err != nil {
+			t.Fatal("selected repository was not merged:", err)
+		}
+		if _, err = os.Stat(filepath.Join(e.Root, "repo0", "partial.txt")); !os.IsNotExist(err) {
+			t.Fatal("unselected repository was changed")
+		}
+	})
+	t.Run("except all children", func(t *testing.T) {
+		e := fixture(t, 2)
+		m, err := e.CreateSelected("root-only", "", "repo0,repo1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(m.Repositories) != 1 || m.Repositories[0].Repository.Name != "root" {
+			t.Fatalf("root-only selection contains children: %+v", m.Repositories)
+		}
+	})
+}
+
+func TestCreateSelectionValidation(t *testing.T) {
+	e := fixture(t, 2)
+	e.Config.Children[0].DependsOn = []string{"repo1"}
+	for name, selection := range map[string][2]string{
+		"mutually exclusive": {"repo0", "repo1"},
+		"blank":              {"repo0,,repo1", ""},
+		"duplicate":          {"repo0,repo0", ""},
+		"root":               {"root", ""},
+		"unknown":            {"missing", ""},
+		"dependency":         {"repo0", ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := e.CreateSelected("invalid-"+strings.ReplaceAll(name, " ", "-"), selection[0], selection[1]); err == nil {
+				t.Fatal("invalid selection accepted")
+			}
+		})
+	}
+}
+
+func TestInterruptedCreateRequiresMatchingSelection(t *testing.T) {
+	e := fixture(t, 2)
+	e.Config.Children[0].Hooks = Hooks{"create": {{ID: "blocked", Shell: "false"}}}
+	saveContractConfig(t, e)
+	m, err := e.CreateSelected("resume-selection", "repo0", "")
+	if err == nil || m == nil || m.State != "creating" {
+		t.Fatalf("expected interrupted creation: %v", err)
+	}
+	if _, err = e.CreateSelected("resume-selection", "repo1", ""); err == nil || !strings.Contains(err.Error(), "selection does not match") {
+		t.Fatalf("mismatched selection accepted: %v", err)
+	}
+}
+
+func TestRemovedSelectedRepositoryBlocksMutationButStatusReportsIt(t *testing.T) {
+	e := fixture(t, 1)
+	m, err := e.Create("missing-config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.Config.Children = []Repository{}
+	e.store.config = e.Config
+	m, err = e.store.load(m.Tag)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := e.Status(m)
+	if len(report.Repositories) != 2 || !strings.Contains(report.Repositories[1].Error, "absent from current configuration") {
+		t.Fatalf("status did not report missing selected repository: %+v", report.Repositories)
+	}
+	if err = e.Merge(m); err == nil || !strings.Contains(err.Error(), "restore its vcm.yml entry") {
+		t.Fatalf("merge did not block missing selected repository: %v", err)
+	}
+	e.Force = true
+	if err = e.Drop(m); err == nil || !strings.Contains(err.Error(), "restore its vcm.yml entry") {
+		t.Fatalf("drop did not block missing selected repository: %v", err)
+	}
+}
+
+func TestRepositoryAddedDuringActiveChangeIsSkippedByMergeAndDrop(t *testing.T) {
+	e := fixture(t, 1)
+	m, err := e.Create("added-later")
+	if err != nil {
+		t.Fatal(err)
+	}
+	added := Repository{Name: "added", Path: "added", URL: filepath.Join(filepath.Dir(e.Root), "not-needed.git"), Trunk: "main"}
+	e.Config.Children = append(e.Config.Children, added)
+	saveContractConfig(t, e)
+	e.store.config = e.Config
+	m, err = e.store.load(m.Tag)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Repositories) != 2 {
+		t.Fatalf("newly configured repository entered active Change: %+v", m.Repositories)
+	}
+	commitFile(t, m.Repositories[1].Path, "selected.txt", "merged\n")
+	if err = e.Merge(m); err != nil {
+		t.Fatal(err)
+	}
+	if m.State != "dropped" {
+		t.Fatalf("merge/drop did not complete: %s", m.State)
+	}
+	if _, err = os.Lstat(filepath.Join(m.Workspace, added.Path)); !os.IsNotExist(err) {
+		t.Fatal("newly configured repository gained a Change worktree")
+	}
+	if _, err = os.Stat(filepath.Join(m.Repositories[1].Origin, "selected.txt")); err != nil {
+		t.Fatal("recorded repository was not merged:", err)
+	}
+}
+
 func TestConflictPreflightDoesNotPartiallyMerge(t *testing.T) {
 	e := fixture(t, 2)
 	m, err := e.Create("conflict")
@@ -188,8 +323,8 @@ func TestPostMergeFailureResumesWithoutDuplicate(t *testing.T) {
 	}
 	commitFile(t, m.Repositories[1].Path, "feature.txt", "new\n")
 	sentinel := filepath.Join(filepath.Dir(e.Root), "allow")
-	m.Repositories[0].Repository.Hooks = Hooks{"post-merge": {{ID: "gate", Shell: "test -f " + sentinel}}}
-	m.Config.Root.Hooks = m.Repositories[0].Repository.Hooks
+	e.Config.Root.Hooks = Hooks{"post-merge": {{ID: "gate", Shell: "test -f " + sentinel}}}
+	saveContractConfig(t, e)
 	if err = e.Merge(m); err == nil {
 		t.Fatal("expected hook failure")
 	}

@@ -17,7 +17,9 @@
 | `children[].depends_on` | Optional list of child names |
 | `children[].hooks` | Optional child lifecycle hooks |
 
-Runner values are single executable names or paths. VCM does not parse them as shell command lines. Explicit blank or null runner values are invalid. Paths must remain inside the root and must not overlap or escape through symlinks. Child identities must be unique; dependencies must exist and form an acyclic graph. Dependencies precede dependents during bootstrap, creation, and merging; declaration order resolves ties. Cleanup reverses that order. Every Change includes the root and every configured child.
+Runner values are single executable names or paths. VCM does not parse them as shell command lines. Explicit blank or null runner values are invalid. Paths must remain inside the root and must not overlap or escape through symlinks. Child identities must be unique; dependencies must exist and form an acyclic graph. Dependencies precede dependents during bootstrap, creation, and merging; declaration order resolves ties. Cleanup reverses that order.
+
+By default, a Change includes the root and every configured child. `vcm create <slug> --only core,web` selects exactly the named children, while `--except devtools` selects every configured child other than those named. The root is always selected. The two flags are mutually exclusive and accept exact, comma-separated child identities without blanks or duplicates. A partial selection is valid only when every dependency of each selected child is also selected; VCM does not add dependencies automatically. Excluding all children creates a root-only Change.
 
 ```yaml
 version: 1
@@ -66,6 +68,6 @@ Each hook has a stable `id` and exactly one nonblank `shell` or `python` body. R
 | `VCM_HOOK_PHASE` | Current lifecycle phase |
 | `VCM_HOOK_ID` | Current hook identity |
 
-A child create hook runs immediately after that worktree exists. The root create hook runs after the complete root exists. Merge runs root pre-merge hooks, child merge hooks and squash-merges in dependency order, then root post-merge hooks and the final root squash-merge. Root drop hooks run while all resources still exist; child drop hooks and cleanup follow in reverse dependency order.
+A selected child create hook runs immediately after that worktree exists. The root create hook runs after all selected worktrees exist. Merge runs root pre-merge hooks, selected child merge hooks and squash-merges in dependency order, then root post-merge hooks and the final root squash-merge. Root drop hooks run while all selected resources still exist; selected child drop hooks and cleanup follow in reverse dependency order.
 
 Hooks own staging and committing their output. Successful hooks must leave their checkout clean. Failures preserve files for inspection and repair. Hooks must be idempotent: a process interruption can leave external effects whose completion VCM cannot determine. Treat hooks as trusted executable project code.

@@ -216,6 +216,9 @@ func (e *Engine) mergeOne(m *Manifest, r *RepoState) error {
 	return e.store.save(m)
 }
 func (e *Engine) Merge(m *Manifest) error {
+	if err := e.ensureCurrentSelection(m); err != nil {
+		return err
+	}
 	if m.State == "dropped" {
 		return nil
 	}
@@ -286,6 +289,9 @@ func (e *Engine) Merge(m *Manifest) error {
 	return e.Drop(m)
 }
 func (e *Engine) Drop(m *Manifest) error {
+	if err := e.ensureCurrentSelection(m); err != nil {
+		return err
+	}
 	if m.State == "dropped" {
 		return nil
 	}

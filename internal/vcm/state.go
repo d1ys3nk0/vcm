@@ -7,8 +7,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"reflect"
 	"regexp"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -18,10 +18,12 @@ type HookState struct {
 	Status string `json:"status"`
 	Error  string `json:"error,omitempty"`
 }
+
+// RepoState is hydrated from current configuration; only lifecycle fields persist.
 type RepoState struct {
-	Repository   Repository `json:"repository"`
-	Origin       string     `json:"origin"`
-	Path         string     `json:"path"`
+	Repository   Repository `json:"-"`
+	Origin       string     `json:"-"`
+	Path         string     `json:"-"`
 	Base         string     `json:"base,omitempty"`
 	Source       string     `json:"source,omitempty"`
 	Target       string     `json:"target,omitempty"`
@@ -34,18 +36,42 @@ type RepoState struct {
 	Removed      bool       `json:"removed"`
 }
 type Manifest struct {
-	Version      int                  `json:"version"`
-	Tag          string               `json:"tag"`
-	Slug         string               `json:"slug"`
-	Workspace    string               `json:"workspace"`
-	Origin       string               `json:"origin"`
-	Config       Config               `json:"config"`
-	State        string               `json:"state"`
-	Repositories []RepoState          `json:"repositories"`
-	Hooks        map[string]HookState `json:"hooks"`
-	Backups      []string             `json:"backups,omitempty"`
+	Version      int                  `json:"-"`
+	Tag          string               `json:"-"`
+	Slug         string               `json:"-"`
+	Workspace    string               `json:"-"`
+	Origin       string               `json:"-"`
+	Config       Config               `json:"-"`
+	State        string               `json:"-"`
+	Repositories []RepoState          `json:"-"`
+	Hooks        map[string]HookState `json:"-"`
+	Backups      []string             `json:"-"`
+	Missing      []string             `json:"-"`
 }
-type store struct{ dir string }
+type persistedManifest struct {
+	Version      int                           `json:"version"`
+	State        string                        `json:"state"`
+	Repositories map[string]persistedRepoState `json:"repositories"`
+	Hooks        map[string]HookState          `json:"hooks"`
+	Backups      []string                      `json:"backups,omitempty"`
+}
+type persistedRepoState struct {
+	Base         string `json:"base,omitempty"`
+	Source       string `json:"source,omitempty"`
+	Target       string `json:"target,omitempty"`
+	TargetBefore string `json:"target_before,omitempty"`
+	MergeTree    string `json:"merge_tree,omitempty"`
+	MergeCommit  string `json:"merge_commit,omitempty"`
+	Intent       string `json:"intent,omitempty"`
+	Owned        bool   `json:"owned,omitempty"`
+	Merged       bool   `json:"merged,omitempty"`
+	Removed      bool   `json:"removed,omitempty"`
+}
+type store struct {
+	dir    string
+	root   string
+	config Config
+}
 
 var tagPattern = regexp.MustCompile(`^[0-9]{12}-[a-z0-9]+(?:-[a-z0-9]+)*$`)
 var objectPattern = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
@@ -54,7 +80,6 @@ func ownerOnly(info os.FileInfo) bool {
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	return ok && stat.Uid == uint32(os.Geteuid()) && info.Mode().Perm()&0077 == 0
 }
-
 func secureDirectory(path string, create bool) error {
 	if create {
 		if err := os.MkdirAll(path, 0700); err != nil {
@@ -70,91 +95,59 @@ func secureDirectory(path string, create bool) error {
 	}
 	return nil
 }
-
-func (s store) validate(m *Manifest) error {
-	if m.Version != 1 || !tagPattern.MatchString(m.Tag) || !slugPattern.MatchString(m.Slug) || m.Tag[13:] != m.Slug {
+func validateIdentity(tag string) error {
+	if !tagPattern.MatchString(tag) {
 		return fmt.Errorf("invalid manifest Change identity")
 	}
-	if _, err := time.Parse("060102150405", m.Tag[:12]); err != nil {
+	if _, err := time.Parse("060102150405", tag[:12]); err != nil {
 		return fmt.Errorf("invalid Change timestamp: %w", err)
 	}
-	if !filepath.IsAbs(m.Origin) || filepath.Clean(m.Origin) != m.Origin {
-		return fmt.Errorf("invalid manifest origin")
+	return nil
+}
+func validatePersisted(s store, tag string, p *persistedManifest) error {
+	if p.Version != 1 {
+		return fmt.Errorf("invalid state version %d", p.Version)
 	}
-	common, err := commonDir(m.Origin)
-	if err != nil {
+	if err := validateIdentity(tag); err != nil {
 		return err
 	}
-	if filepath.Join(common, "vcm") != s.dir {
-		return fmt.Errorf("manifest origin does not own this state directory")
+	if _, ok := p.Repositories["root"]; !ok {
+		return fmt.Errorf("manifest has no root repository state")
 	}
-	if filepath.Base(common) != ".git" || filepath.Dir(common) != m.Origin {
-		return fmt.Errorf("manifest origin must be the primary workspace checkout")
-	}
-	if !isChangeWorkspace(m.Origin, m.Tag, m.Workspace) {
-		return fmt.Errorf("manifest workspace path does not match its identity")
-	}
-	if info, err := os.Lstat(m.Workspace); err == nil && info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("manifest workspace path is a symlink")
-	} else if err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	if err := m.Config.Validate(m.Origin); err != nil {
-		return fmt.Errorf("invalid manifest configuration: %w", err)
-	}
-	ordered, _ := m.Config.Order()
-	if len(m.Repositories) == 0 {
-		return fmt.Errorf("manifest has no workspace repository")
-	}
-	rootURL := m.Repositories[0].Repository.URL
-	if strings.TrimSpace(rootURL) == "" || strings.HasPrefix(rootURL, "-") {
-		return fmt.Errorf("manifest has invalid workspace origin URL")
-	}
-	want := append([]Repository{{Name: "root", URL: rootURL, Trunk: m.Config.Root.Trunk}}, ordered...)
-	if len(m.Repositories) != len(want) {
-		return fmt.Errorf("manifest repository set does not match configuration")
-	}
-	for i, r := range m.Repositories {
-		repository := r.Repository
-		repository.Hooks = nil
-		if !reflect.DeepEqual(repository, want[i]) || r.Origin != filepath.Join(m.Origin, want[i].Path) || r.Path != filepath.Join(m.Workspace, want[i].Path) {
-			return fmt.Errorf("manifest repository %d ownership does not match configuration", i)
-		}
-		if i > 0 {
-			if err := safePath(m.Workspace, want[i].Path); err != nil {
-				return err
-			}
+	for name, r := range p.Repositories {
+		if name != "root" && !identity.MatchString(name) {
+			return fmt.Errorf("invalid recorded repository name %q", name)
 		}
 		for _, hash := range []string{r.Base, r.Source, r.Target, r.TargetBefore, r.MergeTree, r.MergeCommit} {
 			if hash != "" && !objectPattern.MatchString(hash) {
-				return fmt.Errorf("repository %s has invalid recorded Git object", r.Repository.Name)
+				return fmt.Errorf("repository %s has invalid recorded Git object", name)
 			}
 		}
 		if r.Owned && r.Base == "" {
-			return fmt.Errorf("repository %s owns a worktree without a recorded base", r.Repository.Name)
+			return fmt.Errorf("repository %s owns a worktree without a recorded base", name)
 		}
 		if r.Merged && (r.Source == "" || r.Target == "") {
-			return fmt.Errorf("repository %s has an incomplete merged checkpoint", r.Repository.Name)
+			return fmt.Errorf("repository %s has an incomplete merged checkpoint", name)
 		}
 		if r.Intent == "merge" && (r.Source == "" || r.TargetBefore == "" || r.MergeTree == "" || r.MergeCommit == "") {
-			return fmt.Errorf("repository %s has an incomplete merge intent", r.Repository.Name)
+			return fmt.Errorf("repository %s has an incomplete merge intent", name)
 		}
 		switch r.Intent {
 		case "", "create", "merge", "remove":
 		default:
-			return fmt.Errorf("repository %s has invalid intent", r.Repository.Name)
+			return fmt.Errorf("repository %s has invalid intent", name)
 		}
 	}
-	switch m.State {
+	switch p.State {
 	case "creating", "ready", "merging", "dropping", "dropped":
 	default:
 		return fmt.Errorf("invalid manifest lifecycle state")
 	}
-	if m.Hooks == nil {
+	if p.Hooks == nil {
 		return fmt.Errorf("manifest hook outcomes must be an object")
 	}
-	for key, h := range m.Hooks {
-		if !validHookOutcomeKey(key, want) {
+	for key, h := range p.Hooks {
+		if !validHookOutcomeKey(key, p.Repositories) {
 			return fmt.Errorf("unknown recorded hook %s", key)
 		}
 		switch h.Status {
@@ -163,140 +156,164 @@ func (s store) validate(m *Manifest) error {
 			return fmt.Errorf("invalid hook outcome")
 		}
 	}
-	for _, path := range m.Backups {
+	for _, path := range p.Backups {
 		if filepath.Dir(path) != filepath.Join(s.dir, "recovery") || filepath.Ext(path) != ".gz" {
 			return fmt.Errorf("invalid recovery backup path")
 		}
 	}
 	return nil
 }
-
-func validHookOutcomeKey(key string, repositories []Repository) bool {
+func validHookOutcomeKey(key string, repositories map[string]persistedRepoState) bool {
 	parts := strings.Split(key, "/")
 	if len(parts) != 3 || !identity.MatchString(parts[2]) {
 		return false
 	}
-	for _, r := range repositories {
-		if parts[0] != r.Name {
-			continue
-		}
-		return parts[1] == "create" || parts[1] == "drop" || (r.Name == "root" && (parts[1] == "pre-merge" || parts[1] == "post-merge")) || (r.Name != "root" && parts[1] == "merge")
+	if _, ok := repositories[parts[0]]; !ok {
+		return false
 	}
-	return false
+	return parts[1] == "create" || parts[1] == "drop" || parts[0] == "root" && (parts[1] == "pre-merge" || parts[1] == "post-merge") || parts[0] != "root" && parts[1] == "merge"
 }
-
+func persisted(m *Manifest) persistedManifest {
+	p := persistedManifest{Version: 1, State: m.State, Repositories: map[string]persistedRepoState{}, Hooks: m.Hooks, Backups: m.Backups}
+	for _, r := range m.Repositories {
+		p.Repositories[r.Repository.Name] = persistedRepoState{r.Base, r.Source, r.Target, r.TargetBefore, r.MergeTree, r.MergeCommit, r.Intent, r.Owned, r.Merged, r.Removed}
+	}
+	return p
+}
 func (s store) save(m *Manifest) error {
-	m.Config.applyDefaults()
-	if e := s.validate(m); e != nil {
-		return e
+	if m.Version != 1 {
+		return fmt.Errorf("invalid state version %d", m.Version)
 	}
-	if e := secureDirectory(s.dir, true); e != nil {
-		return e
+	p := persisted(m)
+	if err := validatePersisted(s, m.Tag, &p); err != nil {
+		return err
 	}
-	b, e := json.MarshalIndent(m, "", "  ")
-	if e != nil {
-		return e
+	if err := secureDirectory(s.dir, true); err != nil {
+		return err
 	}
-	f, e := os.CreateTemp(s.dir, ".manifest-*")
-	if e != nil {
-		return e
+	b, err := json.MarshalIndent(p, "", "  ")
+	if err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(s.dir, ".manifest-*")
+	if err != nil {
+		return err
 	}
 	defer os.Remove(f.Name())
-	if e = f.Chmod(0600); e == nil {
-		_, e = f.Write(append(b, 10))
+	if err = f.Chmod(0600); err == nil {
+		_, err = f.Write(append(b, '\n'))
 	}
-	if e == nil {
-		e = f.Sync()
+	if err == nil {
+		err = f.Sync()
 	}
-	ce := f.Close()
-	if e == nil {
-		e = ce
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
 	}
-	if e != nil {
-		return e
+	if err != nil {
+		return err
 	}
-	if e = os.Rename(f.Name(), filepath.Join(s.dir, m.Tag+".json")); e != nil {
-		return e
+	if err = os.Rename(f.Name(), filepath.Join(s.dir, m.Tag+".json")); err != nil {
+		return err
 	}
-	d, e := os.Open(s.dir)
-	if e != nil {
-		return e
+	d, err := os.Open(s.dir)
+	if err != nil {
+		return err
 	}
 	defer d.Close()
 	return d.Sync()
 }
+func (s store) hydrate(tag string, p persistedManifest) (*Manifest, error) {
+	common := filepath.Dir(s.dir)
+	if filepath.Base(common) != ".git" {
+		return nil, fmt.Errorf("state directory is not owned by a primary workspace checkout")
+	}
+	root := filepath.Dir(common)
+	if s.root != "" && filepath.Clean(s.root) != root {
+		return nil, fmt.Errorf("state directory does not belong to the current workspace")
+	}
+	config := s.config
+	if config.Version == 0 {
+		var err error
+		config, err = readConfig(root)
+		if err != nil {
+			return nil, fmt.Errorf("read current configuration: %w", err)
+		}
+	}
+	workspace := changeWorkspace(root, tag)
+	if info, err := os.Lstat(workspace); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("derived Change workspace path is a symlink")
+	} else if err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+	m := &Manifest{Version: 1, Tag: tag, Slug: tag[13:], Workspace: workspace, Origin: root, Config: config, State: p.State, Hooks: p.Hooks, Backups: p.Backups}
+	rootURL, _ := git(root, "remote", "get-url", "origin")
+	appendState := func(repository Repository) {
+		state := p.Repositories[repository.Name]
+		origin, path := root, workspace
+		if repository.Name != "root" {
+			origin = filepath.Join(root, repository.Path)
+			path = filepath.Join(workspace, repository.Path)
+		}
+		m.Repositories = append(m.Repositories, RepoState{repository, origin, path, state.Base, state.Source, state.Target, state.TargetBefore, state.MergeTree, state.MergeCommit, state.Intent, state.Owned, state.Merged, state.Removed})
+	}
+	appendState(Repository{Name: "root", URL: rootURL, Trunk: config.Root.Trunk, Hooks: config.Root.Hooks})
+	seen := map[string]bool{"root": true}
+	ordered, _ := config.Order()
+	for _, repository := range ordered {
+		if _, ok := p.Repositories[repository.Name]; ok {
+			appendState(repository)
+			seen[repository.Name] = true
+		}
+	}
+	for name := range p.Repositories {
+		if !seen[name] {
+			m.Missing = append(m.Missing, name)
+		}
+	}
+	sort.Strings(m.Missing)
+	for _, name := range m.Missing {
+		state := p.Repositories[name]
+		m.Repositories = append(m.Repositories, RepoState{Repository: Repository{Name: name}, Base: state.Base, Source: state.Source, Target: state.Target, TargetBefore: state.TargetBefore, MergeTree: state.MergeTree, MergeCommit: state.MergeCommit, Intent: state.Intent, Owned: state.Owned, Merged: state.Merged, Removed: state.Removed})
+	}
+	return m, nil
+}
 func (s store) load(tag string) (*Manifest, error) {
-	if !tagPattern.MatchString(tag) {
-		return nil, fmt.Errorf("invalid Change tag")
+	if err := validateIdentity(tag); err != nil {
+		return nil, err
 	}
 	if err := secureDirectory(s.dir, false); err != nil {
 		return nil, err
 	}
-	f, e := os.OpenFile(filepath.Join(s.dir, tag+".json"), os.O_RDONLY|syscall.O_NOFOLLOW, 0)
-	if e != nil {
-		return nil, e
+	f, err := os.OpenFile(filepath.Join(s.dir, tag+".json"), os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, err
 	}
 	defer f.Close()
-	info, e := f.Stat()
-	if e != nil {
-		return nil, e
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
 	}
 	if !info.Mode().IsRegular() || !ownerOnly(info) {
 		return nil, fmt.Errorf("manifest must be an owner-only regular file")
 	}
-	b, e := io.ReadAll(f)
-	if e != nil {
-		return nil, e
+	b, err := io.ReadAll(f)
+	if err != nil {
+		return nil, err
 	}
-	var m Manifest
+	var p persistedManifest
 	d := json.NewDecoder(bytes.NewReader(b))
 	d.DisallowUnknownFields()
-	if e = d.Decode(&m); e != nil {
-		return nil, e
+	if err = d.Decode(&p); err != nil {
+		return nil, err
 	}
 	var extra any
-	if e = d.Decode(&extra); e != io.EOF {
+	if err = d.Decode(&extra); err != io.EOF {
 		return nil, fmt.Errorf("manifest must contain one JSON object")
 	}
-	if e = validateManifestRunners(b); e != nil {
-		return nil, e
+	if err = validatePersisted(s, tag, &p); err != nil {
+		return nil, err
 	}
-	if m.Tag != tag {
-		return nil, fmt.Errorf("invalid manifest %s", tag)
-	}
-	m.Config.applyDefaults()
-	if e = s.validate(&m); e != nil {
-		return nil, e
-	}
-	return &m, nil
-}
-
-func validateManifestRunners(b []byte) error {
-	var manifest map[string]json.RawMessage
-	if err := json.Unmarshal(b, &manifest); err != nil {
-		return err
-	}
-	var config map[string]json.RawMessage
-	if err := json.Unmarshal(manifest["config"], &config); err != nil {
-		return err
-	}
-	raw, present := config["runners"]
-	if !present {
-		return nil
-	}
-	if string(raw) == "null" {
-		return fmt.Errorf("invalid manifest runners")
-	}
-	var runners map[string]*string
-	if err := json.Unmarshal(raw, &runners); err != nil {
-		return fmt.Errorf("invalid manifest runners: %w", err)
-	}
-	for _, name := range []string{"shell", "python"} {
-		if value, ok := runners[name]; ok && (value == nil || strings.TrimSpace(*value) == "") {
-			return fmt.Errorf("invalid manifest %s runner", name)
-		}
-	}
-	return nil
+	return s.hydrate(tag, p)
 }
 func (s store) all() ([]*Manifest, error) {
 	if err := secureDirectory(s.dir, false); os.IsNotExist(err) {
@@ -304,55 +321,46 @@ func (s store) all() ([]*Manifest, error) {
 	} else if err != nil {
 		return nil, err
 	}
-	entries, e := os.ReadDir(s.dir)
-	if os.IsNotExist(e) {
-		return []*Manifest{}, nil
-	}
-	if e != nil {
-		return nil, e
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		return nil, err
 	}
 	out := []*Manifest{}
-	for _, x := range entries {
-		if filepath.Ext(x.Name()) != ".json" {
+	for _, entry := range entries {
+		if filepath.Ext(entry.Name()) != ".json" {
 			continue
 		}
-		m, e := s.load(x.Name()[:len(x.Name())-5])
-		if e != nil {
-			return nil, e
+		m, err := s.load(strings.TrimSuffix(entry.Name(), ".json"))
+		if err != nil {
+			return nil, err
 		}
 		out = append(out, m)
 	}
 	return out, nil
 }
 func (s store) lock() (func(), error) {
-	if e := secureDirectory(s.dir, true); e != nil {
-		return nil, e
+	if err := secureDirectory(s.dir, true); err != nil {
+		return nil, err
 	}
-	f, e := os.OpenFile(filepath.Join(s.dir, "mutation.lock"), os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0600)
-	if e != nil {
-		return nil, e
+	f, err := os.OpenFile(filepath.Join(s.dir, "mutation.lock"), os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0600)
+	if err != nil {
+		return nil, err
 	}
-	info, e := f.Stat()
-	if e != nil || !info.Mode().IsRegular() || !ownerOnly(info) {
+	info, err := f.Stat()
+	if err != nil || !info.Mode().IsRegular() || !ownerOnly(info) {
 		f.Close()
 		return nil, fmt.Errorf("mutation lock must be an owner-only regular file")
 	}
-	if e = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); e != nil {
+	if err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		f.Close()
-		return nil, fmt.Errorf("workspace mutation already in progress: %w", e)
+		return nil, fmt.Errorf("workspace mutation already in progress: %w", err)
 	}
 	return func() { syscall.Flock(int(f.Fd()), syscall.LOCK_UN); f.Close() }, nil
 }
 func newTag(slug string) string { return time.Now().UTC().Format("060102150405") + "-" + slug }
-
 func changeWorkspace(origin, tag string) string {
 	return filepath.Join(filepath.Dir(origin), filepath.Base(origin)+"."+tag)
 }
-
-func legacyChangeWorkspace(origin, tag string) string {
-	return filepath.Join(filepath.Dir(origin), filepath.Base(origin)+"-"+tag)
-}
-
 func isChangeWorkspace(origin, tag, workspace string) bool {
-	return workspace == changeWorkspace(origin, tag) || workspace == legacyChangeWorkspace(origin, tag)
+	return workspace == changeWorkspace(origin, tag)
 }
