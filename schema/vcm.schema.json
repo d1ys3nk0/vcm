@@ -22,7 +22,7 @@
       "required": ["trunk"],
       "properties": {
         "trunk": {"type": "string", "minLength": 1},
-        "hooks": {"$ref": "#/$defs/rootHooks"}
+        "hooks": {"$ref": "#/$defs/hooks"}
       }
     },
     "children": {
@@ -45,23 +45,16 @@
         {"required": ["python"]}
       ]
     },
-    "rootHooks": {
+    "hooks": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "create": {"type": "array", "items": {"$ref": "#/$defs/hook"}},
-        "pre-merge": {"type": "array", "items": {"$ref": "#/$defs/hook"}},
-        "post-merge": {"type": "array", "items": {"$ref": "#/$defs/hook"}},
-        "drop": {"type": "array", "items": {"$ref": "#/$defs/hook"}}
-      }
-    },
-    "childHooks": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "create": {"type": "array", "items": {"$ref": "#/$defs/hook"}},
-        "merge": {"type": "array", "items": {"$ref": "#/$defs/hook"}},
-        "drop": {"type": "array", "items": {"$ref": "#/$defs/hook"}}
+        "create-before": {"type": "array", "items": {"$ref": "#/$defs/hook"}},
+        "create-after": {"type": "array", "items": {"$ref": "#/$defs/hook"}},
+        "merge-before": {"type": "array", "items": {"$ref": "#/$defs/hook"}},
+        "merge-after": {"type": "array", "items": {"$ref": "#/$defs/hook"}},
+        "drop-before": {"type": "array", "items": {"$ref": "#/$defs/hook"}},
+        "drop-after": {"type": "array", "items": {"$ref": "#/$defs/hook"}}
       }
     },
     "child": {
@@ -78,7 +71,7 @@
         "url": {"type": "string", "minLength": 1},
         "trunk": {"type": "string", "minLength": 1},
         "depends_on": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
-        "hooks": {"$ref": "#/$defs/childHooks"}
+        "hooks": {"$ref": "#/$defs/hooks"}
       }
     }
   }

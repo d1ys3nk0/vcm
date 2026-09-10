@@ -46,7 +46,7 @@ vcm list
 
 The root and child trunks need configured `origin` remotes. Before creation, publish the initial configuration through your normal Git workflow so synchronization can rebase onto its remote trunk. Ignore each configured child checkout path in the root repository.
 
-Make and commit changes in the returned sibling root and its child worktrees. Use `vcm status` within the Change root, then explicitly run `vcm merge` when ready to integrate into local trunks. Merge does not fetch, pull, or push. Run `vcm drop` to discard an unneeded clean, merged Change; inspect `--dry-run` before forced removal.
+Make and commit changes in the returned sibling root and its child worktrees. Use `vcm status` within the Change root, then explicitly run `vcm merge` when ready to integrate into local trunks. Merge does not fetch, pull, or push; it removes the managed worktrees after successful local integration and completes post-cleanup finalization from the base repositories. Run `vcm drop` to discard an unneeded Change without integration; inspect `--dry-run` before forced removal.
 
 ## Commands
 

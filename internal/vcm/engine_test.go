@@ -168,7 +168,7 @@ func TestCreateSelectsExactRepositories(t *testing.T) {
 		log := filepath.Join(filepath.Dir(e.Root), "selected-hooks")
 		t.Setenv("VCM_TEST_SELECTED_HOOKS", log)
 		for i := range e.Config.Children {
-			e.Config.Children[i].Hooks = Hooks{"create": {{ID: "record", Shell: `printf '%s\n' "$VCM_REPOSITORY_NAME" >> "$VCM_TEST_SELECTED_HOOKS"`}}}
+			e.Config.Children[i].Hooks = Hooks{HookCreateAfter: {{ID: "record", Shell: `printf '%s\n' "$VCM_REPOSITORY_NAME" >> "$VCM_TEST_SELECTED_HOOKS"`}}}
 		}
 		saveContractConfig(t, e)
 		m, err := e.CreateSelected("partial", "repo1", "")
@@ -229,7 +229,7 @@ func TestCreateSelectionValidation(t *testing.T) {
 
 func TestInterruptedCreateRequiresMatchingSelection(t *testing.T) {
 	e := fixture(t, 2)
-	e.Config.Children[0].Hooks = Hooks{"create": {{ID: "blocked", Shell: "false"}}}
+	e.Config.Children[0].Hooks = Hooks{HookCreateAfter: {{ID: "blocked", Shell: "false"}}}
 	saveContractConfig(t, e)
 	m, err := e.CreateSelected("resume-selection", "repo0", "")
 	if err == nil || m == nil || m.State != "creating" {
@@ -237,6 +237,36 @@ func TestInterruptedCreateRequiresMatchingSelection(t *testing.T) {
 	}
 	if _, err = e.CreateSelected("resume-selection", "repo1", ""); err == nil || !strings.Contains(err.Error(), "selection does not match") {
 		t.Fatalf("mismatched selection accepted: %v", err)
+	}
+}
+
+func TestCreateBeforeFailureLeavesNoWorktreeAndResumesRecordedSynchronization(t *testing.T) {
+	e := fixture(t, 1)
+	allow := filepath.Join(filepath.Dir(e.Root), "allow-create-before")
+	e.Config.Root.Hooks = Hooks{HookCreateBefore: {{ID: "gate", Shell: `test -f "` + allow + `"`}}}
+	saveContractConfig(t, e)
+	m, err := e.Create("before-worktree")
+	if err == nil || m == nil || m.State != "creating" {
+		t.Fatalf("expected resumable create-before failure: %v", err)
+	}
+	bases := []string{m.Repositories[0].Base, m.Repositories[1].Base}
+	for _, repository := range m.Repositories {
+		if repository.Owned {
+			t.Fatalf("repository %s recorded ownership before worktree creation", repository.Repository.Name)
+		}
+		if _, statErr := os.Stat(repository.Path); !os.IsNotExist(statErr) {
+			t.Fatalf("worktree exists after create-before failure: %s", repository.Path)
+		}
+	}
+	put(t, allow, "allowed")
+	m, err = e.Create("before-worktree")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, repository := range m.Repositories {
+		if repository.Base != bases[i] {
+			t.Fatalf("repository %s repeated completed synchronization", repository.Repository.Name)
+		}
 	}
 }
 
@@ -323,7 +353,7 @@ func TestPostMergeFailureResumesWithoutDuplicate(t *testing.T) {
 	}
 	commitFile(t, m.Repositories[1].Path, "feature.txt", "new\n")
 	sentinel := filepath.Join(filepath.Dir(e.Root), "allow")
-	e.Config.Root.Hooks = Hooks{"post-merge": {{ID: "gate", Shell: "test -f " + sentinel}}}
+	e.Config.Root.Hooks = Hooks{HookMergeAfter: {{ID: "gate", Shell: "test -f " + sentinel}}}
 	saveContractConfig(t, e)
 	if err = e.Merge(m); err == nil {
 		t.Fatal("expected hook failure")
@@ -331,6 +361,14 @@ func TestPostMergeFailureResumesWithoutDuplicate(t *testing.T) {
 	target := mustGit(t, m.Repositories[1].Origin, "rev-parse", "HEAD")
 	if !m.Repositories[1].Merged {
 		t.Fatal("downstream not checkpointed")
+	}
+	if m.State != "merge-finalizing" {
+		t.Fatalf("post-cleanup failure state: %s", m.State)
+	}
+	for _, repository := range m.Repositories {
+		if _, statErr := os.Stat(repository.Path); !os.IsNotExist(statErr) {
+			t.Fatalf("worktree remains after cleanup: %s", repository.Path)
+		}
 	}
 	put(t, sentinel, "yes")
 	if err = e.Merge(m); err != nil {
@@ -340,9 +378,112 @@ func TestPostMergeFailureResumesWithoutDuplicate(t *testing.T) {
 		t.Fatal("duplicate merge")
 	}
 }
+
+func TestDropAfterFailureResumesAfterWorktreeRemoval(t *testing.T) {
+	e := fixture(t, 1)
+	allow := filepath.Join(filepath.Dir(e.Root), "allow-drop-after")
+	log := filepath.Join(filepath.Dir(e.Root), "drop-after-log")
+	e.Config.Children[0].Hooks = Hooks{HookDropAfter: {
+		{ID: "record-once", Shell: `printf 'once\n' >> "` + log + `"`},
+		{ID: "finalize", Shell: `test -f "` + allow + `"`},
+	}}
+	saveContractConfig(t, e)
+	m, err := e.Create("drop-after-retry")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = e.Drop(m); err == nil {
+		t.Fatal("expected drop-after failure")
+	}
+	if !m.Repositories[1].Removed {
+		t.Fatal("child removal was not checkpointed")
+	}
+	if _, err = os.Stat(m.Repositories[1].Path); !os.IsNotExist(err) {
+		t.Fatal("child worktree remains after removal")
+	}
+	put(t, allow, "allowed")
+	m, err = e.store.load(m.Tag)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = e.Drop(m); err != nil {
+		t.Fatal(err)
+	}
+	if m.State != "dropped" {
+		t.Fatalf("drop retry state: %s", m.State)
+	}
+	data, err := os.ReadFile(log)
+	if err != nil || string(data) != "once\n" {
+		t.Fatalf("completed drop-after hook repeated: %q %v", data, err)
+	}
+}
+
+func TestInterruptedRemovalRunsAfterHookWithoutRepeatingRemoval(t *testing.T) {
+	e := fixture(t, 1)
+	log := filepath.Join(filepath.Dir(e.Root), "interrupted-removal-log")
+	e.Config.Children[0].Hooks = Hooks{HookDropAfter: {{ID: "record", Shell: `printf 'after\n' >> "` + log + `"`}}}
+	saveContractConfig(t, e)
+	m, err := e.Create("interrupted-removal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &m.Repositories[1]
+	r.Intent = "remove"
+	m.State = "dropping"
+	if err = e.store.save(m); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, r.Origin, "worktree", "remove", r.Path)
+	if err = e.Drop(m); err != nil {
+		t.Fatal(err)
+	}
+	if !r.Removed || r.Intent != "" {
+		t.Fatalf("interrupted removal not checkpointed: %+v", *r)
+	}
+	data, err := os.ReadFile(log)
+	if err != nil || string(data) != "after\n" {
+		t.Fatalf("drop-after outcome: %q %v", data, err)
+	}
+}
+
+func TestMergeRejectsTargetDriftBeforeFurtherIntegration(t *testing.T) {
+	e := fixture(t, 2)
+	allow := filepath.Join(filepath.Dir(e.Root), "allow-second-merge")
+	e.Config.Children[1].Hooks = Hooks{HookMergeBefore: {{ID: "gate", Shell: `test -f "` + allow + `"`}}}
+	saveContractConfig(t, e)
+	m, err := e.Create("target-drift")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, repository := range m.Repositories[1:] {
+		commitFile(t, repository.Path, "feature.txt", "reviewed\n")
+	}
+	if err = e.Merge(m); err == nil {
+		t.Fatal("expected second repository gate failure")
+	}
+	if !m.Repositories[1].Merged {
+		t.Fatal("first completed integration was not checkpointed")
+	}
+	firstTarget := m.Repositories[1].Target
+	commitFile(t, e.Root, "unexpected.txt", "target drift\n")
+	put(t, allow, "allowed")
+	m, err = e.store.load(m.Tag)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = e.Merge(m); err == nil || !strings.Contains(err.Error(), "target changed after merge gate") {
+		t.Fatalf("target drift accepted: %v", err)
+	}
+	if got := mustGit(t, m.Repositories[1].Origin, "rev-parse", "HEAD"); got != firstTarget {
+		t.Fatal("completed integration changed while rejecting target drift")
+	}
+	if m.Repositories[2].Merged {
+		t.Fatal("pending repository integrated before target drift rejection")
+	}
+}
 func TestHooksDirtyFailureAndEnvironment(t *testing.T) {
 	e := fixture(t, 1)
-	e.Config.Children[0].Hooks = Hooks{"create": {{ID: "inspect", Shell: `test "$VCM_REPOSITORY_NAME" = repo0; test "$PWD" = "$VCM_REPOSITORY_PATH"; test -d "$VCM_ROOT"; echo preserved > generated.txt`}}}
+	e.Config.Children[0].Hooks = Hooks{HookCreateAfter: {{ID: "inspect", Shell: `test "$VCM_REPOSITORY_NAME" = repo0; test "$PWD" = "$VCM_REPOSITORY_PATH"; test -d "$VCM_ROOT"; echo preserved > generated.txt`}}}
 	configBytes, err := yaml.Marshal(e.Config)
 	if err != nil {
 		t.Fatal(err)
@@ -383,11 +524,11 @@ func TestTypedMultilineHooksUseConfiguredRunnersAndEnvironment(t *testing.T) {
 	}
 	log := filepath.Join(filepath.Dir(e.Root), "hook-events")
 	t.Setenv("VCM_TEST_EVENTS", log)
-	e.Config.Children[0].Hooks = Hooks{"create": {
+	e.Config.Children[0].Hooks = Hooks{HookCreateAfter: {
 		{ID: "shell-environment", Shell: `test "$VCM_REPOSITORY_NAME" = repo0
 test "$PWD" = "$VCM_REPOSITORY_PATH"
 test "$VCM_ROOT" != "$VCM_ROOT_ORIGIN"
-test "$VCM_HOOK_PHASE" = create
+test "$VCM_HOOK_PHASE" = create-after
 test "$VCM_HOOK_ID" = shell-environment
 printf 'shell\n' >> "$VCM_TEST_EVENTS"
 `},
@@ -397,7 +538,7 @@ from pathlib import Path
 assert os.environ["VCM_REPOSITORY_NAME"] == "repo0"
 assert Path.cwd() == Path(os.environ["VCM_REPOSITORY_PATH"])
 assert os.environ["VCM_ROOT"] != os.environ["VCM_ROOT_ORIGIN"]
-assert os.environ["VCM_HOOK_PHASE"] == "create"
+assert os.environ["VCM_HOOK_PHASE"] == "create-after"
 assert os.environ["VCM_HOOK_ID"] == "python-environment"
 with open(os.environ["VCM_TEST_EVENTS"], "a") as stream:
     stream.write("python\n")

@@ -139,7 +139,7 @@ func validatePersisted(s store, tag string, p *persistedManifest) error {
 		}
 	}
 	switch p.State {
-	case "creating", "ready", "merging", "dropping", "dropped":
+	case "creating", "ready", "merging", "merge-finalizing", "dropping", "dropped":
 	default:
 		return fmt.Errorf("invalid manifest lifecycle state")
 	}
@@ -171,7 +171,7 @@ func validHookOutcomeKey(key string, repositories map[string]persistedRepoState)
 	if _, ok := repositories[parts[0]]; !ok {
 		return false
 	}
-	return parts[1] == "create" || parts[1] == "drop" || parts[0] == "root" && (parts[1] == "pre-merge" || parts[1] == "post-merge") || parts[0] != "root" && parts[1] == "merge"
+	return hookPhases[parts[1]]
 }
 func persisted(m *Manifest) persistedManifest {
 	p := persistedManifest{Version: 1, State: m.State, Repositories: map[string]persistedRepoState{}, Hooks: m.Hooks, Backups: m.Backups}

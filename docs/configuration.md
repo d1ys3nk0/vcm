@@ -29,11 +29,10 @@ runners:
 root:
   trunk: main
   hooks:
-    pre-merge:
+    merge-before:
       - id: verify
         shell: |
           ./scripts/verify-change.sh
-    post-merge:
       - id: archive
         python: |
           from archive import archive_change
@@ -44,7 +43,7 @@ children:
     url: git@github.com:example/api.git
     trunk: main
     hooks:
-      create:
+      create-after:
         - id: prepare
           shell: ./scripts/prepare-change.sh
   - name: web
@@ -54,7 +53,16 @@ children:
     depends_on: [api]
 ```
 
-Each hook has a stable `id` and exactly one nonblank `shell` or `python` body. Root phases are `create`, `pre-merge`, `post-merge`, and `drop`. Child phases are `create`, `merge`, and `drop`. Entries execute in declaration order in the relevant Change checkout. Shell bodies run as `<runners.shell> -eu -o pipefail -c <body>`; Python bodies run as `<runners.python> -c <body>`.
+Each hook has a stable `id` and exactly one nonblank `shell` or `python` body. Root and child repositories use the same phases: `create-before`, `create-after`, `merge-before`, `merge-after`, `drop-before`, and `drop-after`. Entries execute in declaration order. Shell bodies run as `<runners.shell> -eu -o pipefail -c <body>`; Python bodies run as `<runners.python> -c <body>`.
+
+| Phase | Working directory |
+| --- | --- |
+| `create-before` | Base repository |
+| `create-after` | Change worktree |
+| `merge-before` | Change worktree |
+| `merge-after` | Base repository after all managed worktree cleanup |
+| `drop-before` | Change worktree |
+| `drop-after` | Base repository after that repository's worktree removal |
 
 | Variable | Meaning |
 | --- | --- |
@@ -68,6 +76,10 @@ Each hook has a stable `id` and exactly one nonblank `shell` or `python` body. R
 | `VCM_HOOK_PHASE` | Current lifecycle phase |
 | `VCM_HOOK_ID` | Current hook identity |
 
-A selected child create hook runs immediately after that worktree exists. The root create hook runs after all selected worktrees exist. Merge runs root pre-merge hooks, selected child merge hooks and squash-merges in dependency order, then root post-merge hooks and the final root squash-merge. Root drop hooks run while all selected resources still exist; selected child drop hooks and cleanup follow in reverse dependency order.
+Create synchronizes every selected base repository, runs root `create-before`, creates the root worktree, then runs each child's `create-before`, creates its worktree, and runs its `create-after` in dependency order. Root `create-after` runs after all selected worktrees exist. Commits produced by `create-before` are included in that repository's creation baseline.
+
+Merge runs root `merge-before`, then each child's `merge-before` and local integration in dependency order, and finally integrates the root. VCM removes all managed worktrees, runs child `merge-after` hooks in dependency order, and runs root `merge-after` last. Drop runs root `drop-before` while all selected worktrees exist, then processes children in reverse dependency order by running `drop-before`, removing the owned worktree, and running `drop-after`; it removes the root last and runs root `drop-after`. Hooks for unselected repositories and resources never created are skipped.
 
 Hooks own staging and committing their output. Successful hooks must leave their checkout clean. Failures preserve files for inspection and repair. Hooks must be idempotent: a process interruption can leave external effects whose completion VCM cannot determine. Treat hooks as trusted executable project code.
+
+The six names above are the complete version `1` phase contract. Obsolete names such as `create`, `pre-merge`, `post-merge`, `merge`, and `drop` are rejected rather than reinterpreted.

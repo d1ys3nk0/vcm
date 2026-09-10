@@ -70,7 +70,7 @@ func TestStatusUsesFullJSONHashesAndAbbreviatedHumanHashes(t *testing.T) {
 	const target = "2222222222222222222222222222222222222222"
 	manifest := &vcm.Manifest{
 		Tag: "260902100000-readable", Slug: "readable", Workspace: "/tmp/readable", State: "ready", Backups: []string{"/tmp/recovery.tar.gz"},
-		Hooks: map[string]vcm.HookState{"root/pre-merge/check": {Status: "failed", Error: "hook detail"}},
+		Hooks: map[string]vcm.HookState{"root/merge-before/check": {Status: "failed", Error: "hook detail"}},
 	}
 	report := vcm.StatusReport{
 		Repositories:      []vcm.RepositoryStatus{{Name: "root", Path: manifest.Workspace, Source: head, Target: target, DirtyOrInterrupted: "uncommitted files"}},

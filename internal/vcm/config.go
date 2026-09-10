@@ -18,6 +18,22 @@ type Hook struct {
 	Python string `yaml:"python,omitempty" json:"python,omitempty"`
 }
 type Hooks map[string][]Hook
+
+const (
+	HookCreateBefore = "create-before"
+	HookCreateAfter  = "create-after"
+	HookMergeBefore  = "merge-before"
+	HookMergeAfter   = "merge-after"
+	HookDropBefore   = "drop-before"
+	HookDropAfter    = "drop-after"
+)
+
+var hookPhases = map[string]bool{
+	HookCreateBefore: true, HookCreateAfter: true,
+	HookMergeBefore: true, HookMergeAfter: true,
+	HookDropBefore: true, HookDropAfter: true,
+}
+
 type Runners struct {
 	Shell  string `yaml:"shell,omitempty" json:"shell"`
 	Python string `yaml:"python,omitempty" json:"python"`
@@ -113,9 +129,9 @@ func validateExplicitRunners(b []byte) error {
 	}
 	return nil
 }
-func checkHooks(h Hooks, root bool) error {
+func checkHooks(h Hooks) error {
 	for phase, entries := range h {
-		if phase != "create" && phase != "drop" && !(root && (phase == "pre-merge" || phase == "post-merge")) && !(!root && phase == "merge") {
+		if !hookPhases[phase] {
 			return fmt.Errorf("unsupported hook phase %q", phase)
 		}
 		ids := map[string]bool{}
@@ -172,7 +188,7 @@ func (c Config) Validate(root string) error {
 	if strings.TrimSpace(c.Runners.Shell) == "" && c.Runners.Shell != "" || strings.TrimSpace(c.Runners.Python) == "" && c.Runners.Python != "" {
 		return fmt.Errorf("runner executable must not be blank")
 	}
-	if e := checkHooks(c.Root.Hooks, true); e != nil {
+	if e := checkHooks(c.Root.Hooks); e != nil {
 		return e
 	}
 	names := map[string]bool{"root": true}
@@ -194,7 +210,7 @@ func (c Config) Validate(root string) error {
 			}
 		}
 		paths = append(paths, r.Path)
-		if e := checkHooks(r.Hooks, false); e != nil {
+		if e := checkHooks(r.Hooks); e != nil {
 			return fmt.Errorf("repository %s: %w", r.Name, e)
 		}
 	}

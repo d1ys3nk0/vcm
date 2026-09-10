@@ -118,7 +118,7 @@ func TestDropRechecksDownstreamHookSafety(t *testing.T) {
 			origin := filepath.Join(e.Root, "repo0")
 			commitFile(t, origin, ".gitignore", "local\nforeign/\n")
 			mustGit(t, origin, "push", "origin", "main")
-			e.Config.Children[0].Hooks = Hooks{"drop": {{ID: "generate", Shell: tc.command}}}
+			e.Config.Children[0].Hooks = Hooks{HookDropBefore: {{ID: "generate", Shell: tc.command}}}
 			saveContractConfig(t, e)
 			m, err := e.Create("hook-safety")
 			if err != nil {

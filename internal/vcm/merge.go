@@ -89,6 +89,9 @@ func (e *Engine) preflight(m *Manifest) error {
 		if err != nil {
 			return err
 		}
+		if m.State == "merging" && !r.Merged && r.TargetBefore != "" && target != r.TargetBefore {
+			return fmt.Errorf("repository %s: target changed after merge gate; restore recorded target before retry", r.Repository.Name)
+		}
 		if m.State == "merging" && !r.Merged && r.Source != "" && source != r.Source {
 			repair := false
 			for key, h := range m.Hooks {
@@ -226,13 +229,15 @@ func (e *Engine) Merge(m *Manifest) error {
 		return fmt.Errorf("Change creation incomplete; retry create %s", m.Slug)
 	}
 	if m.State == "dropping" {
-		return e.Drop(m)
-	}
-	if err := e.preflight(m); err != nil {
-		return err
+		return fmt.Errorf("Change is being dropped; retry drop %s", m.Tag)
 	}
 	root := &m.Repositories[0]
-	if m.State != "merging" {
+	if m.State != "merge-finalizing" {
+		if err := e.preflight(m); err != nil {
+			return err
+		}
+	}
+	if m.State != "merging" && m.State != "merge-finalizing" {
 		for i := range m.Repositories {
 			r := &m.Repositories[i]
 			h, err := head(r.Path)
@@ -251,49 +256,72 @@ func (e *Engine) Merge(m *Manifest) error {
 			return err
 		}
 	}
-	if err := e.hooks(m, root, "pre-merge"); err != nil {
+	if m.State == "merging" {
+		if err := e.hooks(m, root, HookMergeBefore); err != nil {
+			return err
+		}
+		for i := 1; i < len(m.Repositories); i++ {
+			r := &m.Repositories[i]
+			if r.Merged {
+				continue
+			}
+			if err := e.checkPendingSource(m, r); err != nil {
+				return err
+			}
+			if err := e.hooks(m, r, HookMergeBefore); err != nil {
+				return err
+			}
+			if err := e.checkCompleted(m); err != nil {
+				return err
+			}
+			if err := e.mergeOne(m, r); err != nil {
+				return err
+			}
+		}
+		if !root.Merged {
+			if err := e.checkPendingSource(m, root); err != nil {
+				return err
+			}
+			if err := e.checkCompleted(m); err != nil {
+				return err
+			}
+			if err := e.mergeOne(m, root); err != nil {
+				return err
+			}
+		}
+		m.State = "merge-finalizing"
+		if err := e.store.save(m); err != nil {
+			return err
+		}
+	}
+	if err := e.removeAll(m); err != nil {
 		return err
 	}
 	for i := 1; i < len(m.Repositories); i++ {
-		r := &m.Repositories[i]
-		if r.Merged {
-			continue
+		if m.Repositories[i].Owned {
+			if err := e.hooksAt(m, &m.Repositories[i], HookMergeAfter, m.Repositories[i].Origin, false); err != nil {
+				return err
+			}
 		}
-		if err := e.checkPendingSource(m, r); err != nil {
-			return err
-		}
-		if err := e.hooks(m, r, "merge"); err != nil {
-			return err
-		}
-		if err := e.checkCompleted(m); err != nil {
-			return err
-		}
-		if err := e.mergeOne(m, r); err != nil {
+	}
+	if root.Owned {
+		if err := e.hooksAt(m, root, HookMergeAfter, root.Origin, false); err != nil {
 			return err
 		}
 	}
-	if !root.Merged {
-		if err := e.checkPendingSource(m, root); err != nil {
-			return err
-		}
-		if err := e.hooks(m, root, "post-merge"); err != nil {
-			return err
-		}
-		if err := e.checkCompleted(m); err != nil {
-			return err
-		}
-		if err := e.mergeOne(m, root); err != nil {
-			return err
-		}
-	}
-	return e.Drop(m)
+	m.State = "dropped"
+	return e.store.save(m)
 }
+
 func (e *Engine) Drop(m *Manifest) error {
 	if err := e.ensureCurrentSelection(m); err != nil {
 		return err
 	}
 	if m.State == "dropped" {
 		return nil
+	}
+	if m.State == "merge-finalizing" || m.State == "merging" {
+		return fmt.Errorf("Change merge is incomplete; retry merge %s", m.Tag)
 	}
 	for i := range m.Repositories {
 		r := &m.Repositories[i]
@@ -346,9 +374,16 @@ func (e *Engine) Drop(m *Manifest) error {
 	if err := e.store.save(m); err != nil {
 		return err
 	}
-	if !m.Repositories[0].Removed {
-		if err := e.hooks(m, &m.Repositories[0], "drop"); err != nil {
+	root := &m.Repositories[0]
+	if root.Owned && !root.Removed {
+		run, err := dropBeforePending(root)
+		if err != nil {
 			return err
+		}
+		if run {
+			if err := e.hooks(m, root, HookDropBefore); err != nil {
+				return err
+			}
 		}
 	}
 	// Workspace drop hooks run while all resources exist; validate their effects before removing any checkout.
@@ -388,83 +423,132 @@ func (e *Engine) Drop(m *Manifest) error {
 			}
 		}
 	}
-	for i := len(m.Repositories) - 1; i >= 0; i-- {
+	for i := len(m.Repositories) - 1; i >= 1; i-- {
 		r := &m.Repositories[i]
-		if r.Removed || !r.Owned {
+		if !r.Owned {
 			continue
 		}
-		if _, err := os.Lstat(r.Path); err == nil {
-			if i > 0 {
-				if err = e.hooks(m, r, "drop"); err != nil {
-					return err
-				}
-			}
-			if err = e.owned(m, r); err != nil {
-				return err
-			}
-			if err = e.cleanupSafety(m, r); err != nil {
-				return err
-			}
-			if e.Force {
-				if err = e.backup(r.Path, r.Repository.Name, m); err != nil {
-					return err
-				}
-			} else if err = clean(r.Path); err != nil {
-				return err
-			}
-			revision, err := head(r.Path)
+		if !r.Removed {
+			run, err := dropBeforePending(r)
 			if err != nil {
 				return err
 			}
-			expected := r.Source
-			if expected == "" {
-				expected = r.Base
+			if run {
+				if err := e.hooks(m, r, HookDropBefore); err != nil {
+					return err
+				}
 			}
-			if !e.Force && revision != expected {
-				return fmt.Errorf("repository %s: drop hook changed source; preserve or merge its commit before cleanup", r.Repository.Name)
-			}
-			if e.Force {
-				r.Source = revision
-			}
-			if err := e.checkDropTarget(r); err != nil {
-				return err
-			}
-			r.Intent = "remove"
-			if err = e.store.save(m); err != nil {
-				return err
-			}
-			args := []string{"worktree", "remove"}
-			if e.Force {
-				args = append(args, "--force")
-			}
-			args = append(args, r.Path)
-			if _, err = git(r.Origin, args...); err != nil {
-				return fmt.Errorf("repository %s cleanup: %w; inspect preserved path and retry", r.Repository.Name, err)
-			}
-		} else if !os.IsNotExist(err) || r.Intent != "remove" {
-			return fmt.Errorf("repository %s: owned worktree disappeared unexpectedly", r.Repository.Name)
-		}
-		ref := "refs/heads/" + m.Tag
-		revision, err := git(r.Origin, "rev-parse", "--verify", ref)
-		if err == nil {
-			expected := r.Source
-			if expected == "" {
-				expected = r.Base
-			}
-			if revision != expected {
-				return fmt.Errorf("repository %s: branch changed before cleanup", r.Repository.Name)
-			}
-			if _, err = git(r.Origin, "update-ref", "-d", ref, revision); err != nil {
+			if err := e.removeOne(m, r); err != nil {
 				return err
 			}
 		}
-		r.Removed = true
-		r.Intent = ""
-		if err = e.store.save(m); err != nil {
+		if err := e.hooksAt(m, r, HookDropAfter, r.Origin, false); err != nil {
+			return err
+		}
+	}
+	if root.Owned && !root.Removed {
+		if err := e.removeOne(m, root); err != nil {
+			return err
+		}
+	}
+	if root.Owned {
+		if err := e.hooksAt(m, root, HookDropAfter, root.Origin, false); err != nil {
 			return err
 		}
 	}
 	m.State = "dropped"
+	return e.store.save(m)
+}
+
+func dropBeforePending(r *RepoState) (bool, error) {
+	_, err := os.Lstat(r.Path)
+	if err == nil {
+		return true, nil
+	}
+	if os.IsNotExist(err) && r.Intent == "remove" {
+		return false, nil
+	}
+	if os.IsNotExist(err) {
+		return false, fmt.Errorf("repository %s: owned worktree disappeared unexpectedly", r.Repository.Name)
+	}
+	return false, err
+}
+
+func (e *Engine) removeAll(m *Manifest) error {
+	for i := len(m.Repositories) - 1; i >= 0; i-- {
+		r := &m.Repositories[i]
+		if r.Owned && !r.Removed {
+			if err := e.removeOne(m, r); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (e *Engine) removeOne(m *Manifest, r *RepoState) error {
+	if _, err := os.Lstat(r.Path); err == nil {
+		if err = e.owned(m, r); err != nil {
+			return err
+		}
+		if err = e.cleanupSafety(m, r); err != nil {
+			return err
+		}
+		if e.Force {
+			if err = e.backup(r.Path, r.Repository.Name, m); err != nil {
+				return err
+			}
+		} else if err = clean(r.Path); err != nil {
+			return err
+		}
+		revision, err := head(r.Path)
+		if err != nil {
+			return err
+		}
+		expected := r.Source
+		if expected == "" {
+			expected = r.Base
+		}
+		if !e.Force && revision != expected {
+			return fmt.Errorf("repository %s: hook changed source; preserve or merge its commit before cleanup", r.Repository.Name)
+		}
+		if e.Force {
+			r.Source = revision
+		}
+		if err = e.checkDropTarget(r); err != nil {
+			return err
+		}
+		r.Intent = "remove"
+		if err = e.store.save(m); err != nil {
+			return err
+		}
+		args := []string{"worktree", "remove"}
+		if e.Force {
+			args = append(args, "--force")
+		}
+		args = append(args, r.Path)
+		if _, err = git(r.Origin, args...); err != nil {
+			return fmt.Errorf("repository %s cleanup: %w; inspect preserved path and retry", r.Repository.Name, err)
+		}
+	} else if !os.IsNotExist(err) || r.Intent != "remove" {
+		return fmt.Errorf("repository %s: owned worktree disappeared unexpectedly", r.Repository.Name)
+	}
+	ref := "refs/heads/" + m.Tag
+	revision, err := git(r.Origin, "rev-parse", "--verify", ref)
+	if err == nil {
+		expected := r.Source
+		if expected == "" {
+			expected = r.Base
+		}
+		if revision != expected {
+			return fmt.Errorf("repository %s: branch changed before cleanup", r.Repository.Name)
+		}
+		if _, err = git(r.Origin, "update-ref", "-d", ref, revision); err != nil {
+			return err
+		}
+	}
+	r.Removed = true
+	r.Intent = ""
 	return e.store.save(m)
 }
 

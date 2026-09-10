@@ -439,7 +439,7 @@ func (e *Engine) CreateSelected(slug, only, except string) (*Manifest, error) {
 	for _, r := range selected {
 		m.Repositories = append(m.Repositories, RepoState{Repository: r, Origin: filepath.Join(e.Root, r.Path), Path: filepath.Join(path, r.Path)})
 	}
-	if err = e.prepareCreate(m); err != nil {
+	if err = e.preflightCreate(m); err != nil {
 		return nil, err
 	}
 	if err = e.store.save(m); err != nil {
@@ -448,7 +448,7 @@ func (e *Engine) CreateSelected(slug, only, except string) (*Manifest, error) {
 	return m, e.resumeCreate(m)
 }
 
-func (e *Engine) prepareCreate(m *Manifest) error {
+func (e *Engine) preflightCreate(m *Manifest) error {
 	for i := range m.Repositories {
 		r := &m.Repositories[i]
 		if err := validateOrigin(r.Origin, r.Repository); err != nil {
@@ -469,23 +469,6 @@ func (e *Engine) prepareCreate(m *Manifest) error {
 		if _, err := git(r.Origin, "show-ref", "--verify", "refs/heads/"+m.Tag); err == nil {
 			return fmt.Errorf("repository %s: branch collision %s", r.Repository.Name, m.Tag)
 		}
-	}
-	for i := range m.Repositories {
-		r := &m.Repositories[i]
-		base, err := e.syncOne(r.Repository, true)
-		if err != nil {
-			return err
-		}
-		if i == 0 {
-			current, err := readConfig(e.Root)
-			if err != nil {
-				return err
-			}
-			if !sameChangeConfig(current, m.Config) {
-				return fmt.Errorf("root configuration changed during synchronization; retry create")
-			}
-		}
-		r.Base = base
 	}
 	return nil
 }
@@ -524,6 +507,8 @@ func (e *Engine) owned(m *Manifest, r *RepoState) error {
 	return nil
 }
 func (e *Engine) resumeCreate(m *Manifest) error {
+	// Synchronize every selected repository before project code runs. Persist each
+	// baseline independently so a failure before worktree creation is resumable.
 	for i := range m.Repositories {
 		r := &m.Repositories[i]
 		if r.Base == "" {
@@ -545,7 +530,37 @@ func (e *Engine) resumeCreate(m *Manifest) error {
 				return err
 			}
 		}
+	}
+	root := &m.Repositories[0]
+	if !root.Owned {
+		if err := e.hooksAt(m, root, HookCreateBefore, root.Origin, false); err != nil {
+			return err
+		}
+		base, err := head(root.Origin)
+		if err != nil {
+			return err
+		}
+		root.Base = base
+		if err = e.store.save(m); err != nil {
+			return err
+		}
+	}
+	for i := range m.Repositories {
+		r := &m.Repositories[i]
 		if !r.Owned {
+			if i > 0 {
+				if err := e.hooksAt(m, r, HookCreateBefore, r.Origin, false); err != nil {
+					return err
+				}
+				base, err := head(r.Origin)
+				if err != nil {
+					return err
+				}
+				r.Base = base
+				if err = e.store.save(m); err != nil {
+					return err
+				}
+			}
 			if r.Intent == "create" {
 				if _, err := os.Stat(r.Path); err == nil {
 					if err = e.owned(m, r); err != nil {
@@ -579,12 +594,12 @@ func (e *Engine) resumeCreate(m *Manifest) error {
 			return err
 		}
 		if i > 0 {
-			if err := e.hooks(m, r, "create"); err != nil {
+			if err := e.hooksAt(m, r, HookCreateAfter, r.Path, true); err != nil {
 				return err
 			}
 		}
 	}
-	if err := e.hooks(m, &m.Repositories[0], "create"); err != nil {
+	if err := e.hooksAt(m, root, HookCreateAfter, root.Path, true); err != nil {
 		return err
 	}
 	for i := range m.Repositories {
@@ -598,6 +613,10 @@ func (e *Engine) resumeCreate(m *Manifest) error {
 	return e.store.save(m)
 }
 func (e *Engine) hooks(m *Manifest, r *RepoState, phase string) error {
+	return e.hooksAt(m, r, phase, r.Path, phase != HookDropBefore)
+}
+
+func (e *Engine) hooksAt(m *Manifest, r *RepoState, phase, directory string, updateSource bool) error {
 	current, err := readConfig(m.Origin)
 	if err != nil {
 		return fmt.Errorf("read current hook configuration: %w", err)
@@ -605,6 +624,29 @@ func (e *Engine) hooks(m *Manifest, r *RepoState, phase string) error {
 	hooks, err := hooksFor(current, r.Repository.Name)
 	if err != nil {
 		return err
+	}
+	basePhase := directory == r.Origin
+	if !updateSource && basePhase {
+		expected := r.Target
+		if phase == HookCreateBefore {
+			expected = r.Base
+		}
+		failed := false
+		for _, h := range hooks[phase] {
+			if m.Hooks[r.Repository.Name+"/"+phase+"/"+h.ID].Status == "failed" {
+				failed = true
+				break
+			}
+		}
+		if expected != "" && !failed {
+			actual, headErr := head(directory)
+			if headErr != nil {
+				return headErr
+			}
+			if actual != expected {
+				return fmt.Errorf("repository %s: base changed after %s checkpoint; restore recorded revision before retry", r.Repository.Name, phase)
+			}
+		}
 	}
 	for _, h := range hooks[phase] {
 		key := r.Repository.Name + "/" + phase + "/" + h.ID
@@ -625,13 +667,13 @@ func (e *Engine) hooks(m *Manifest, r *RepoState, phase string) error {
 		} else {
 			cmd = exec.CommandContext(context.Background(), current.Runners.Python, "-c", h.Python)
 		}
-		cmd.Dir = r.Path
+		cmd.Dir = directory
 		cmd.Env = append(os.Environ(), "VCM_CHANGE_TAG="+m.Tag, "VCM_CHANGE_SLUG="+m.Slug, "VCM_ROOT="+m.Workspace, "VCM_ROOT_ORIGIN="+m.Origin, "VCM_REPOSITORY_NAME="+r.Repository.Name, "VCM_REPOSITORY_ORIGIN="+r.Origin, "VCM_REPOSITORY_PATH="+r.Path, "VCM_HOOK_PHASE="+phase, "VCM_HOOK_ID="+h.ID)
 		cmd.Stdout = e.Out
 		cmd.Stderr = e.Out
 		err := cmd.Run()
 		if err == nil {
-			err = clean(r.Path)
+			err = clean(directory)
 		}
 		if err != nil {
 			m.Hooks[key] = HookState{Status: "failed", Error: err.Error()}
@@ -640,12 +682,22 @@ func (e *Engine) hooks(m *Manifest, r *RepoState, phase string) error {
 			}
 			return fmt.Errorf("repository %s phase %s hook %s: %w; repair preserved checkout and retry", r.Repository.Name, phase, h.ID, err)
 		}
-		revision, revErr := head(r.Path)
-		if revErr != nil {
-			return revErr
-		}
-		if phase != "drop" {
+		if updateSource {
+			revision, revErr := head(directory)
+			if revErr != nil {
+				return revErr
+			}
 			r.Source = revision
+		} else if basePhase {
+			revision, revErr := head(directory)
+			if revErr != nil {
+				return revErr
+			}
+			if phase == HookCreateBefore {
+				r.Base = revision
+			} else {
+				r.Target = revision
+			}
 		}
 		m.Hooks[key] = HookState{Status: "complete"}
 		if err = e.store.save(m); err != nil {

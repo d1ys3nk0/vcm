@@ -94,12 +94,14 @@ func TestConfigurationRejectsInvalidContracts(t *testing.T) {
 		"invalid root phase":  func(c *Config) { c.Root.Hooks = Hooks{"merge": {{ID: "prepare", Shell: "true"}}} },
 		"invalid child phase": func(c *Config) { c.Children[0].Hooks = Hooks{"post-merge": {{ID: "prepare", Shell: "true"}}} },
 		"duplicate hook identity": func(c *Config) {
-			c.Root.Hooks = Hooks{"create": {{ID: "prepare", Shell: "true"}, {ID: "prepare", Python: "pass"}}}
+			c.Root.Hooks = Hooks{HookCreateBefore: {{ID: "prepare", Shell: "true"}, {ID: "prepare", Python: "pass"}}}
 		},
-		"missing body": func(c *Config) { c.Root.Hooks = Hooks{"create": {{ID: "prepare"}}} },
-		"blank shell":  func(c *Config) { c.Root.Hooks = Hooks{"create": {{ID: "prepare", Shell: " "}}} },
-		"blank python": func(c *Config) { c.Root.Hooks = Hooks{"create": {{ID: "prepare", Python: " "}}} },
-		"two bodies":   func(c *Config) { c.Root.Hooks = Hooks{"create": {{ID: "prepare", Shell: "true", Python: "pass"}}} },
+		"missing body": func(c *Config) { c.Root.Hooks = Hooks{HookCreateBefore: {{ID: "prepare"}}} },
+		"blank shell":  func(c *Config) { c.Root.Hooks = Hooks{HookCreateBefore: {{ID: "prepare", Shell: " "}}} },
+		"blank python": func(c *Config) { c.Root.Hooks = Hooks{HookCreateBefore: {{ID: "prepare", Python: " "}}} },
+		"two bodies": func(c *Config) {
+			c.Root.Hooks = Hooks{HookCreateBefore: {{ID: "prepare", Shell: "true", Python: "pass"}}}
+		},
 	}
 	for _, branch := range []string{"-option", "feature..x", "feature.lock", "refs//x", "bad name", "feature@{x}", ".hidden", "feature/"} {
 		b := branch

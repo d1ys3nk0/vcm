@@ -25,21 +25,22 @@ func TestRecoveryContractHookOrder(t *testing.T) {
 	t.Setenv("VCM_TEST_EVENTS", log)
 	e.Config.Children[0].DependsOn = []string{e.Config.Children[1].Name}
 	hook := func(phase string) Hook {
-		return Hook{ID: phase, Shell: `test "$PWD" = "$VCM_REPOSITORY_PATH"; test "$(git rev-parse --show-toplevel)" = "$VCM_REPOSITORY_PATH"; test "$(git rev-parse --abbrev-ref HEAD)" = "$VCM_CHANGE_TAG"; test "$VCM_HOOK_PHASE" = "` + phase + `"; test "$VCM_HOOK_ID" = "` + phase + `"; printf '%s/` + phase + `\n' "$VCM_REPOSITORY_NAME" >> "$VCM_TEST_EVENTS"`}
+		return Hook{ID: phase, Shell: `case "$VCM_HOOK_PHASE" in create-before|merge-after|drop-after) expected="$VCM_REPOSITORY_ORIGIN" ;; *) expected="$VCM_REPOSITORY_PATH" ;; esac; test "$PWD" = "$expected"; test "$VCM_ROOT" != "$VCM_ROOT_ORIGIN"; test "$VCM_HOOK_PHASE" = "` + phase + `"; test "$VCM_HOOK_ID" = "` + phase + `"; printf '%s/` + phase + `\n' "$VCM_REPOSITORY_NAME" >> "$VCM_TEST_EVENTS"`}
 	}
 	for i := range e.Config.Children {
 		e.Config.Children[i].Hooks = Hooks{}
-		for _, phase := range []string{"create", "merge", "drop"} {
+		for _, phase := range []string{HookCreateBefore, HookCreateAfter, HookMergeBefore, HookMergeAfter} {
 			e.Config.Children[i].Hooks[phase] = []Hook{hook(phase)}
 		}
 	}
 	e.Config.Root.Hooks = Hooks{}
-	for _, phase := range []string{"create", "pre-merge", "post-merge", "drop"} {
+	for _, phase := range []string{HookCreateBefore, HookCreateAfter, HookMergeBefore, HookMergeAfter} {
 		e.Config.Root.Hooks[phase] = []Hook{hook(phase)}
 	}
-	for _, phase := range []string{"create", "drop"} {
-		e.Config.Root.Hooks[phase][0].Shell += `; test -e "$VCM_ROOT/repo0/.git"; test -e "$VCM_ROOT/repo1/.git"`
-	}
+	e.Config.Root.Hooks[HookCreateBefore][0].Shell += `; test ! -e "$VCM_ROOT"`
+	e.Config.Root.Hooks[HookCreateAfter][0].Shell += `; test -e "$VCM_ROOT/repo0/.git"; test -e "$VCM_ROOT/repo1/.git"`
+	e.Config.Root.Hooks[HookMergeBefore][0].Shell += `; test -e "$VCM_ROOT/repo0/.git"; test -e "$VCM_ROOT/repo1/.git"`
+	e.Config.Root.Hooks[HookMergeAfter][0].Shell += `; test ! -e "$VCM_ROOT"`
 	saveContractConfig(t, e)
 	m, err := e.Create("hook-order")
 	if err != nil {
@@ -55,9 +56,84 @@ func TestRecoveryContractHookOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "repo1/create\nrepo0/create\nroot/create\nroot/pre-merge\nrepo1/merge\nrepo0/merge\nroot/post-merge\nroot/drop\nrepo0/drop\nrepo1/drop\n"
+	want := "root/create-before\nrepo1/create-before\nrepo1/create-after\nrepo0/create-before\nrepo0/create-after\nroot/create-after\nroot/merge-before\nrepo1/merge-before\nrepo0/merge-before\nrepo1/merge-after\nrepo0/merge-after\nroot/merge-after\n"
 	if string(data) != want {
 		t.Fatalf("unexpected hook sequence:\n%s\nwant:\n%s", data, want)
+	}
+}
+
+func TestRecoveryContractDropOrderAndPartialSelection(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		only   string
+		want   string
+		absent string
+	}{
+		{name: "all", want: "root/drop-before\nrepo0/drop-before\nrepo0/drop-after\nrepo1/drop-before\nrepo1/drop-after\nroot/drop-after\n"},
+		{name: "partial", only: "repo1", want: "root/drop-before\nrepo1/drop-before\nrepo1/drop-after\nroot/drop-after\n", absent: "repo0/"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := fixture(t, 2)
+			e.Config.Children[0].DependsOn = []string{e.Config.Children[1].Name}
+			log := filepath.Join(filepath.Dir(e.Root), "drop-events")
+			t.Setenv("VCM_TEST_EVENTS", log)
+			hook := func(phase string) Hook {
+				return Hook{ID: phase, Shell: `case "$VCM_HOOK_PHASE" in drop-before) test "$PWD" = "$VCM_REPOSITORY_PATH" ;; drop-after) test "$PWD" = "$VCM_REPOSITORY_ORIGIN"; test ! -e "$VCM_REPOSITORY_PATH" ;; esac; printf '%s/` + phase + `\n' "$VCM_REPOSITORY_NAME" >> "$VCM_TEST_EVENTS"`}
+			}
+			e.Config.Root.Hooks = Hooks{HookDropBefore: {hook(HookDropBefore)}, HookDropAfter: {hook(HookDropAfter)}}
+			for i := range e.Config.Children {
+				e.Config.Children[i].Hooks = Hooks{HookDropBefore: {hook(HookDropBefore)}, HookDropAfter: {hook(HookDropAfter)}}
+			}
+			saveContractConfig(t, e)
+			m, err := e.CreateSelected("drop-order", tc.only, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = e.Drop(m); err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(log)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(data) != tc.want || tc.absent != "" && strings.Contains(string(data), tc.absent) {
+				t.Fatalf("unexpected drop hook sequence:\n%s\nwant:\n%s", data, tc.want)
+			}
+		})
+	}
+}
+
+func TestRecoveryContractHookGeneratedCommitsReachExpectedBaseline(t *testing.T) {
+	e := fixture(t, 1)
+	commit := func(name string) Hook {
+		return Hook{ID: name, Shell: `printf '%s\n' "$VCM_HOOK_PHASE" > ` + name + `.txt; git add ` + name + `.txt; git commit -m 'chore: ` + name + `'`}
+	}
+	e.Config.Root.Hooks = Hooks{
+		HookCreateBefore: {commit("root-created")},
+		HookMergeBefore:  {commit("root-archived")},
+	}
+	e.Config.Children[0].Hooks = Hooks{HookCreateBefore: {commit("child-created")}}
+	saveContractConfig(t, e)
+	m, err := e.Create("hook-commits")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, index := range []int{0, 1} {
+		if got := mustGit(t, m.Repositories[index].Path, "rev-parse", "HEAD"); got != m.Repositories[index].Base {
+			t.Fatalf("repository %s creation baseline excludes create-before commit", m.Repositories[index].Repository.Name)
+		}
+	}
+	if _, err = os.Stat(filepath.Join(m.Workspace, "root-created.txt")); err != nil {
+		t.Fatal("root create-before output missing from Change worktree:", err)
+	}
+	if _, err = os.Stat(filepath.Join(m.Repositories[1].Path, "child-created.txt")); err != nil {
+		t.Fatal("child create-before output missing from Change worktree:", err)
+	}
+	if err = e.Merge(m); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = os.Stat(filepath.Join(e.Root, "root-archived.txt")); err != nil {
+		t.Fatal("root merge-before commit did not reach base integration:", err)
 	}
 }
 
@@ -65,8 +141,8 @@ func TestRecoveryContractPendingSourceDrift(t *testing.T) {
 	e := fixture(t, 2)
 	allow := filepath.Join(filepath.Dir(e.Root), "allow-merge")
 	t.Setenv("VCM_TEST_ALLOW", allow)
-	e.Config.Root.Hooks = Hooks{"pre-merge": {{ID: "reviewed", Shell: "true"}}}
-	e.Config.Children[0].Hooks = Hooks{"merge": {{ID: "blocked", Shell: `test -f "$VCM_TEST_ALLOW"`}}}
+	e.Config.Root.Hooks = Hooks{HookMergeBefore: {{ID: "reviewed", Shell: "true"}}}
+	e.Config.Children[0].Hooks = Hooks{HookMergeBefore: {{ID: "blocked", Shell: `test -f "$VCM_TEST_ALLOW"`}}}
 	saveContractConfig(t, e)
 	m, err := e.Create("pending-source")
 	if err != nil {
@@ -101,7 +177,7 @@ func TestRecoveryContractDropHookCommitsPreserved(t *testing.T) {
 	for _, owner := range []string{"root", "downstream"} {
 		t.Run(owner, func(t *testing.T) {
 			e := fixture(t, 1)
-			hooks := Hooks{"drop": {{ID: "retained-output", Shell: `printf 'retain this output\n' > hook-output.txt; git add hook-output.txt; git commit -m 'chore: retain hook output'`}}}
+			hooks := Hooks{HookDropBefore: {{ID: "retained-output", Shell: `printf 'retain this output\n' > hook-output.txt; git add hook-output.txt; git commit -m 'chore: retain hook output'`}}}
 			if owner == "root" {
 				e.Config.Root.Hooks = hooks
 			} else {

@@ -136,7 +136,7 @@ func TestManifestRoundTripAndStrictDecoding(t *testing.T) {
 
 func TestManifestDoesNotPersistConfiguration(t *testing.T) {
 	s, m := safetyFixture(t)
-	m.Config.Root.Hooks = Hooks{"create": {{ID: "current", Shell: "true"}}}
+	m.Config.Root.Hooks = Hooks{HookCreateAfter: {{ID: "current", Shell: "true"}}}
 	s.config = m.Config
 	if err := s.save(m); err != nil {
 		t.Fatal(err)
@@ -156,7 +156,7 @@ func TestManifestDoesNotPersistConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(loaded.Config.Root.Hooks["create"]) != 1 {
+	if len(loaded.Config.Root.Hooks[HookCreateAfter]) != 1 {
 		t.Fatal("manifest did not hydrate current hooks")
 	}
 }
