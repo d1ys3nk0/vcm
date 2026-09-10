@@ -83,4 +83,6 @@ Merge runs every selected repository's `merge-before` hook before changing any t
 
 Hooks own staging and committing their output. Successful hooks must leave their checkout clean. Failures preserve files for inspection and repair. Hooks must be idempotent: a process interruption can leave external effects whose completion VCM cannot determine. Treat hooks as trusted executable project code.
 
+VCM writes hook start, output, and completion lines to stderr with the prefix `[hook/repository/phase/hook-id @ execution-path]`. Both hook stdout and stderr share one synchronized line stream, so every complete line has exactly one prefix; VCM also terminates and prefixes a final unterminated line before reporting the hook result. Command results remain isolated on stdout, including with `--json`.
+
 The six names above are the complete version `1` phase contract. Obsolete names such as `create`, `pre-merge`, `post-merge`, `merge`, and `drop` are rejected rather than reinterpreted.

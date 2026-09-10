@@ -131,6 +131,7 @@ func (e *Engine) Bootstrap() error {
 			if err = validateOrigin(path, r); err != nil {
 				return err
 			}
+			e.logOperation("bootstrap", r.Name, path, "validated existing checkout on trunk %s", r.Trunk)
 			continue
 		} else if !os.IsNotExist(err) {
 			return err
@@ -141,10 +142,11 @@ func (e *Engine) Bootstrap() error {
 		if _, err := git(e.Root, "clone", "--branch", r.Trunk, "--", r.URL, path); err != nil {
 			return fmt.Errorf("repository %s bootstrap: %w; remove incomplete clone after inspection and retry", r.Name, err)
 		}
+		e.logOperation("bootstrap", r.Name, path, "cloned trunk %s", r.Trunk)
 	}
 	return nil
 }
-func (e *Engine) backup(path, label string, m *Manifest) error {
+func (e *Engine) backup(operation, path, label string, m *Manifest) error {
 	dir := filepath.Join(e.store.dir, "recovery")
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
@@ -209,11 +211,13 @@ func (e *Engine) backup(path, label string, m *Manifest) error {
 	if _, err = git(path, "update-ref", ref, rev); err != nil {
 		return err
 	}
-	fmt.Fprintf(e.Out, "Recovery backup: %s; history: %s\n", filename, ref)
 	if m != nil {
 		m.Backups = append(m.Backups, filename)
-		return e.store.save(m)
+		if err := e.store.save(m); err != nil {
+			return err
+		}
 	}
+	e.logOperation(operation, label, path, "created recovery backup %s; history %s", filename, ref)
 	return nil
 }
 func (e *Engine) syncOne(r Repository, create bool) (string, error) {
@@ -248,7 +252,7 @@ func (e *Engine) syncOne(r Repository, create bool) (string, error) {
 		operation = "reset"
 	}
 	if e.Force && !create {
-		if err = e.backup(p, r.Name, nil); err != nil {
+		if err = e.backup("sync", p, r.Name, nil); err != nil {
 			return "", err
 		}
 		if _, err = git(p, "update-ref", "refs/vcm/recovery/"+time.Now().UTC().Format("20060102T150405.000000000")+"-trunk", trunk); err != nil {
@@ -283,7 +287,16 @@ func (e *Engine) syncOne(r Repository, create bool) (string, error) {
 	if err = complete(); err != nil {
 		return "", err
 	}
-	return head(p)
+	after, err := head(p)
+	if err != nil {
+		return "", err
+	}
+	logOperation := "sync"
+	if create {
+		logOperation = "create"
+	}
+	e.logOperation(logOperation, r.Name, p, "synchronized trunk %s %s -> %s (%s)", r.Trunk, abbreviateRevision(trunk), abbreviateRevision(after), operation)
+	return after, nil
 }
 func (e *Engine) Sync() error {
 	ordered, _ := e.Config.Order()
@@ -589,6 +602,7 @@ func (e *Engine) resumeCreate(m *Manifest) error {
 			if err := e.store.save(m); err != nil {
 				return err
 			}
+			e.logOperation("create", r.Repository.Name, r.Path, "created managed worktree at %s", abbreviateRevision(r.Base))
 		}
 		if err := e.owned(m, r); err != nil {
 			return err
@@ -673,9 +687,15 @@ func (e *Engine) hooksAt(m *Manifest, r *RepoState, phase, directory string, upd
 			selected = append(selected, repository.Repository.Name)
 		}
 		cmd.Env = append(os.Environ(), "VCM_CHANGE_TAG="+m.Tag, "VCM_CHANGE_SLUG="+m.Slug, "VCM_ROOT="+m.Workspace, "VCM_ROOT_ORIGIN="+m.Origin, "VCM_SELECTED_REPOSITORIES="+strings.Join(selected, ","), "VCM_REPOSITORY_NAME="+r.Repository.Name, "VCM_REPOSITORY_ORIGIN="+r.Origin, "VCM_REPOSITORY_PATH="+r.Path, "VCM_HOOK_PHASE="+phase, "VCM_HOOK_ID="+h.ID)
-		cmd.Stdout = e.Out
-		cmd.Stderr = e.Out
+		prefix := fmt.Sprintf("[hook/%s/%s/%s @ %s] ", r.Repository.Name, phase, h.ID, directory)
+		hookOutput := newPrefixedLineWriter(e.Out, prefix)
+		cmd.Stdout = hookOutput
+		cmd.Stderr = hookOutput
+		e.logHook(r.Repository.Name, phase, h.ID, directory, "started")
 		err := cmd.Run()
+		if flushErr := hookOutput.Flush(); err == nil {
+			err = flushErr
+		}
 		if err == nil {
 			err = clean(directory)
 		}
@@ -707,6 +727,7 @@ func (e *Engine) hooksAt(m *Manifest, r *RepoState, phase, directory string, upd
 		if err = e.store.save(m); err != nil {
 			return err
 		}
+		e.logHook(r.Repository.Name, phase, h.ID, directory, "completed")
 	}
 	return nil
 }

@@ -20,7 +20,7 @@ func (e *Engine) Refresh(m *Manifest) error {
 			return err
 		}
 	}
-	refreshOne := func(r *RepoState) error {
+	refreshRepository := func(r *RepoState) error {
 		if err := e.owned(m, r); err != nil {
 			return err
 		}
@@ -98,6 +98,18 @@ func (e *Engine) Refresh(m *Manifest) error {
 		if err = e.store.save(m); err != nil {
 			return err
 		}
+		return nil
+	}
+	refreshOne := func(r *RepoState) error {
+		baseBefore, sourceBefore := r.Base, r.Source
+		if err := refreshRepository(r); err != nil {
+			return err
+		}
+		if r.Base == baseBefore {
+			e.logOperation("refresh", r.Repository.Name, r.Path, "already current at base %s; source %s", abbreviateRevision(r.Base), abbreviateRevision(r.Source))
+			return nil
+		}
+		e.logOperation("refresh", r.Repository.Name, r.Path, "updated base %s -> %s; source %s -> %s", abbreviateRevision(baseBefore), abbreviateRevision(r.Base), abbreviateRevision(sourceBefore), abbreviateRevision(r.Source))
 		return nil
 	}
 	for i := 1; i < len(m.Repositories); i++ {

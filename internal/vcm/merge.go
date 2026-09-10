@@ -70,7 +70,7 @@ func (e *Engine) Drop(m *Manifest) error {
 			r := &m.Repositories[i]
 			if !r.Removed && r.Owned {
 				if _, err := os.Lstat(r.Path); err == nil {
-					if err = e.backup(r.Path, r.Repository.Name, m); err != nil {
+					if err = e.backup("drop", r.Path, r.Repository.Name, m); err != nil {
 						return err
 					}
 				}
@@ -111,7 +111,7 @@ func (e *Engine) Drop(m *Manifest) error {
 		if !r.Removed {
 			if r.Intent == "remove" {
 				if _, statErr := os.Lstat(r.Path); os.IsNotExist(statErr) {
-					if err := e.removeOne(m, r); err != nil {
+					if err := e.removeOne("drop", m, r); err != nil {
 						return err
 					}
 					goto afterRemoval
@@ -136,7 +136,7 @@ func (e *Engine) Drop(m *Manifest) error {
 					return fmt.Errorf("repository %s: workspace drop hook changed committed source; preserve work before cleanup", r.Repository.Name)
 				}
 			}
-			if err := e.removeOne(m, r); err != nil {
+			if err := e.removeOne("drop", m, r); err != nil {
 				return err
 			}
 		}
@@ -146,7 +146,7 @@ func (e *Engine) Drop(m *Manifest) error {
 		}
 	}
 	if root.Owned && !root.Removed {
-		if err := e.removeOne(m, root); err != nil {
+		if err := e.removeOne("drop", m, root); err != nil {
 			return err
 		}
 	}
@@ -159,11 +159,11 @@ func (e *Engine) Drop(m *Manifest) error {
 	return e.store.save(m)
 }
 
-func (e *Engine) removeAll(m *Manifest) error {
+func (e *Engine) removeAll(operation string, m *Manifest) error {
 	for i := len(m.Repositories) - 1; i >= 0; i-- {
 		r := &m.Repositories[i]
 		if r.Owned && !r.Removed {
-			if err := e.removeOne(m, r); err != nil {
+			if err := e.removeOne(operation, m, r); err != nil {
 				return err
 			}
 		}
@@ -171,7 +171,7 @@ func (e *Engine) removeAll(m *Manifest) error {
 	return nil
 }
 
-func (e *Engine) removeOne(m *Manifest, r *RepoState) error {
+func (e *Engine) removeOne(operation string, m *Manifest, r *RepoState) error {
 	if _, err := os.Lstat(r.Path); err == nil {
 		if err = e.owned(m, r); err != nil {
 			return err
@@ -180,7 +180,7 @@ func (e *Engine) removeOne(m *Manifest, r *RepoState) error {
 			return err
 		}
 		if e.Force {
-			if err = e.backup(r.Path, r.Repository.Name, m); err != nil {
+			if err = e.backup(operation, r.Path, r.Repository.Name, m); err != nil {
 				return err
 			}
 		} else if err = clean(r.Path); err != nil {
@@ -233,7 +233,11 @@ func (e *Engine) removeOne(m *Manifest, r *RepoState) error {
 		}
 	}
 	r.Removed, r.Intent = true, ""
-	return e.store.save(m)
+	if err := e.store.save(m); err != nil {
+		return err
+	}
+	e.logOperation(operation, r.Repository.Name, r.Path, "removed managed worktree and branch %s", m.Tag)
+	return nil
 }
 
 func preserveIgnoredOrigin(origin, incoming string) error {
@@ -427,6 +431,7 @@ func (e *Engine) preflight(m *Manifest) error {
 				if err := e.store.save(m); err != nil {
 					return err
 				}
+				e.logOperation("merge", r.Repository.Name, r.Origin, "applied trunk %s %s -> %s", r.Repository.Trunk, abbreviateRevision(r.TargetBefore), abbreviateRevision(r.Target))
 				continue
 			}
 			if target == r.TargetBefore {
@@ -452,6 +457,7 @@ func (e *Engine) preflight(m *Manifest) error {
 }
 
 func (e *Engine) freezeMerge(m *Manifest) error {
+	unchanged := []*RepoState{}
 	for i := range m.Repositories {
 		r := &m.Repositories[i]
 		if r.Merged || r.Intent == "merge" {
@@ -483,6 +489,7 @@ func (e *Engine) freezeMerge(m *Manifest) error {
 		}
 		if tree == existing {
 			r.Target, r.Merged, r.Intent = target, true, ""
+			unchanged = append(unchanged, r)
 			continue
 		}
 		message := m.MergeMessage + "\n\nVCM-Change: " + m.Tag
@@ -492,7 +499,13 @@ func (e *Engine) freezeMerge(m *Manifest) error {
 		}
 		r.MergeCommit, r.Intent = commit, "merge"
 	}
-	return e.store.save(m)
+	if err := e.store.save(m); err != nil {
+		return err
+	}
+	for _, r := range unchanged {
+		e.logOperation("merge", r.Repository.Name, r.Origin, "trunk %s unchanged at %s", r.Repository.Trunk, abbreviateRevision(r.Target))
+	}
+	return nil
 }
 
 func (e *Engine) applyMerge(m *Manifest, r *RepoState) error {
@@ -515,7 +528,11 @@ func (e *Engine) applyMerge(m *Manifest, r *RepoState) error {
 	}
 	if target == r.MergeCommit {
 		r.Target, r.Merged, r.Intent = target, true, ""
-		return e.store.save(m)
+		if err := e.store.save(m); err != nil {
+			return err
+		}
+		e.logOperation("merge", r.Repository.Name, r.Origin, "applied trunk %s %s -> %s", r.Repository.Trunk, abbreviateRevision(r.TargetBefore), abbreviateRevision(r.Target))
+		return nil
 	}
 	if target != r.TargetBefore {
 		return fmt.Errorf("repository %s: target changed after merge gate", r.Repository.Name)
@@ -530,7 +547,11 @@ func (e *Engine) applyMerge(m *Manifest, r *RepoState) error {
 		return err
 	}
 	r.Target, r.Merged, r.Intent = r.MergeCommit, true, ""
-	return e.store.save(m)
+	if err := e.store.save(m); err != nil {
+		return err
+	}
+	e.logOperation("merge", r.Repository.Name, r.Origin, "applied trunk %s %s -> %s", r.Repository.Trunk, abbreviateRevision(r.TargetBefore), abbreviateRevision(r.Target))
+	return nil
 }
 
 func (e *Engine) mergeOne(m *Manifest, r *RepoState) error {
@@ -621,7 +642,7 @@ func (e *Engine) Merge(m *Manifest, messages ...string) error {
 			return err
 		}
 	}
-	if err := e.removeAll(m); err != nil {
+	if err := e.removeAll("merge", m); err != nil {
 		return err
 	}
 	for i := 1; i < len(m.Repositories); i++ {

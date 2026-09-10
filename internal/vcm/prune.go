@@ -142,6 +142,14 @@ func (e *Engine) Prune(confirm ConfirmPrune) (PruneReport, error) {
 		return PruneReport{}, err
 	}
 	report := PruneReport{Workspace: e.Root, Actions: []PruneAction{}}
+	record := func(action PruneAction, path string) {
+		report.Actions = append(report.Actions, action)
+		message := fmt.Sprintf("%s %s", action.Action, action.Status)
+		if action.Action == PruneDeleteBranch {
+			message = fmt.Sprintf("%s %s for %s", action.Action, action.Status, action.Target)
+		}
+		e.logOperation("prune", action.Repository, path, "%s", message)
+	}
 	if inv.Unsafe {
 		report.RemainingIssues = inv.Report.Issues
 		return report, nil
@@ -153,7 +161,7 @@ func (e *Engine) Prune(confirm ConfirmPrune) (PruneReport, error) {
 			action := PruneAction{Repository: name, Action: PruneReset, Target: path}
 			if !confirm(action) {
 				action.Status = PruneDeclined
-				report.Actions = append(report.Actions, action)
+				record(action, path)
 				continue
 			}
 			if err := resetCheckout(path); err != nil {
@@ -161,7 +169,7 @@ func (e *Engine) Prune(confirm ConfirmPrune) (PruneReport, error) {
 			} else {
 				action.Status = PruneCompleted
 			}
-			report.Actions = append(report.Actions, action)
+			record(action, path)
 		}
 	}
 	for _, name := range names {
@@ -170,7 +178,7 @@ func (e *Engine) Prune(confirm ConfirmPrune) (PruneReport, error) {
 			action := PruneAction{Repository: name, Action: PruneRemoveWorktree, Target: path}
 			if !confirm(action) {
 				action.Status = PruneDeclined
-				report.Actions = append(report.Actions, action)
+				record(action, path)
 				continue
 			}
 			if err := removeWorktree(repository, repository.UnexpectedWorktrees[path]); err != nil {
@@ -178,7 +186,7 @@ func (e *Engine) Prune(confirm ConfirmPrune) (PruneReport, error) {
 			} else {
 				action.Status = PruneCompleted
 			}
-			report.Actions = append(report.Actions, action)
+			record(action, path)
 		}
 	}
 
@@ -199,12 +207,12 @@ func (e *Engine) Prune(confirm ConfirmPrune) (PruneReport, error) {
 			action := PruneAction{Repository: name, Action: PruneDeleteBranch, Target: branch}
 			if !confirm(action) {
 				action.Status = PruneDeclined
-				report.Actions = append(report.Actions, action)
+				record(action, repository.Origin)
 				continue
 			}
 			if branchCheckedOut(repository, branch) {
 				action.Status, action.Detail = PruneBlocked, "branch is checked out in a registered worktree"
-				report.Actions = append(report.Actions, action)
+				record(action, repository.Origin)
 				continue
 			}
 			object := repository.UnexpectedBranches[branch]
@@ -213,7 +221,7 @@ func (e *Engine) Prune(confirm ConfirmPrune) (PruneReport, error) {
 			} else {
 				action.Status = PruneCompleted
 			}
-			report.Actions = append(report.Actions, action)
+			record(action, repository.Origin)
 		}
 	}
 	final, err := e.audit()

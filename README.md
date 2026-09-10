@@ -95,4 +95,4 @@ JSON output is command-specific and does not expose the persisted state. Timesta
 | Lifecycle `--dry-run` | `{command, dry_run, force, tag?, workspace?, resources}` |
 | Error with `--json` | `{error:{message}}` on stderr with a nonzero exit status |
 
-Command results use stdout; progress and hook output use stderr. See the [configuration and hook reference](docs/configuration.md), [recovery guidance](docs/recovery.md), [contributor guide](CONTRIBUTING.md), and [security policy](SECURITY.md).
+Command results use stdout; progress and hook output use stderr, including with `--json`. Progress identifies the operation, repository, and filesystem location as `[operation/repository @ path] message`. Hook lifecycle and output lines use `[hook/repository/phase/hook-id @ execution-path] message`. Logs are deterministic and omit timestamps, remote URLs, command bodies, and environment variables. Dry runs emit only their stdout operation plans and do not emit simulated progress. See the [configuration and hook reference](docs/configuration.md), [recovery guidance](docs/recovery.md), [contributor guide](CONTRIBUTING.md), and [security policy](SECURITY.md).

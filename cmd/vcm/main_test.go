@@ -69,6 +69,43 @@ func runErrorOutput(t *testing.T, args ...string) (string, error) {
 	return output.String(), callErr
 }
 
+func runCapturedOutput(t *testing.T, args ...string) (string, string, error) {
+	t.Helper()
+	oldStdout, oldStderr := os.Stdout, os.Stderr
+	stdoutReader, stdoutWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stderrReader, stderrWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout, os.Stderr = stdoutWriter, stderrWriter
+	defer func() {
+		os.Stdout, os.Stderr = oldStdout, oldStderr
+		stdoutReader.Close()
+		stderrReader.Close()
+		stdoutWriter.Close()
+		stderrWriter.Close()
+	}()
+	callErr := run(args)
+	if err := stdoutWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := stderrWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	stdout, err := io.ReadAll(stdoutReader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stderr, err := io.ReadAll(stderrReader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(stdout), string(stderr), callErr
+}
+
 func cliWorkspace(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
@@ -237,6 +274,30 @@ func TestDryRunCreatesNoResources(t *testing.T) {
 		if _, err := os.Lstat(path); !os.IsNotExist(err) {
 			t.Fatalf("dry run created %s", path)
 		}
+	}
+}
+
+func TestJSONResultRemainsOnStdoutWhileProgressUsesStderr(t *testing.T) {
+	root := cliCleanWorkspace(t)
+	remote := filepath.Join(filepath.Dir(root), "workspace.git")
+	if out, err := exec.Command("git", "init", "--bare", "--initial-branch=main", remote).CombinedOutput(); err != nil {
+		t.Fatalf("git init remote: %s %v", out, err)
+	}
+	for _, args := range [][]string{{"-C", root, "remote", "add", "origin", remote}, {"-C", root, "push", "origin", "main"}} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %s %v", args, out, err)
+		}
+	}
+	stdout, stderr, err := runCapturedOutput(t, "create", "json-progress", "--json", "--workspace", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result createResult
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("invalid JSON stdout %q: %v", stdout, err)
+	}
+	if !strings.Contains(stderr, "[create/root @ "+root+"] synchronized trunk main ") || strings.Contains(stdout, "[create/") {
+		t.Fatalf("stdout/stderr were not isolated:\nstdout: %s\nstderr: %s", stdout, stderr)
 	}
 }
 
