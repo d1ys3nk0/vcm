@@ -44,7 +44,7 @@ func TestManifestRejectsUnsafeOwnership(t *testing.T) {
 		"traversal identity":             func(m *Manifest) { m.Tag = "../outside" },
 		"slug mismatch":                  func(m *Manifest) { m.Slug = "different" },
 		"invalid revision":               func(m *Manifest) { m.Repositories[1].Base = "HEAD" },
-		"unknown hook":                   func(m *Manifest) { m.Hooks["api/create/unknown"] = HookState{Status: "complete"} },
+		"invalid hook key":               func(m *Manifest) { m.Hooks["api/create/not_valid"] = HookState{Status: "complete"} },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -90,15 +90,6 @@ func TestManifestRoundTripAndStrictDecoding(t *testing.T) {
 			return b
 		},
 		"trailing object": func(b []byte) []byte { return append(b, []byte("{}")...) },
-		"legacy hook command": func(b []byte) []byte {
-			var data map[string]any
-			_ = json.Unmarshal(b, &data)
-			config := data["config"].(map[string]any)
-			root := config["root"].(map[string]any)
-			root["hooks"] = map[string]any{"create": []any{map[string]any{"id": "legacy", "command": "true"}}}
-			b, _ = json.Marshal(data)
-			return b
-		},
 		"blank runner": func(b []byte) []byte {
 			var data map[string]any
 			_ = json.Unmarshal(b, &data)
@@ -123,6 +114,43 @@ func TestManifestRoundTripAndStrictDecoding(t *testing.T) {
 				t.Fatal("invalid manifest accepted")
 			}
 		})
+	}
+}
+
+func TestManifestAcceptsLegacyWorkspacePath(t *testing.T) {
+	s, m := safetyFixture(t)
+	m.Workspace = legacyChangeWorkspace(m.Origin, m.Tag)
+	m.Repositories[0].Path = m.Workspace
+	m.Repositories[1].Path = filepath.Join(m.Workspace, m.Repositories[1].Repository.Path)
+	if err := s.save(m); err != nil {
+		t.Fatalf("legacy workspace path rejected: %v", err)
+	}
+}
+
+func TestManifestDoesNotPersistConfigurationHooks(t *testing.T) {
+	s, m := safetyFixture(t)
+	m.Config.Root.Hooks = Hooks{"create": {{ID: "current", Shell: "true"}}}
+	if err := s.save(m); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(s.dir, m.Tag+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var persisted map[string]any
+	if err = json.Unmarshal(raw, &persisted); err != nil {
+		t.Fatal(err)
+	}
+	root := persisted["config"].(map[string]any)["root"].(map[string]any)
+	if _, ok := root["hooks"]; ok {
+		t.Fatal("manifest persisted root hooks")
+	}
+	loaded, err := s.load(m.Tag)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Config.Root.Hooks != nil {
+		t.Fatal("manifest restored root hooks")
 	}
 }
 

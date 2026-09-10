@@ -319,7 +319,7 @@ func (e *Engine) prepareCreate(m *Manifest) error {
 			if err != nil {
 				return err
 			}
-			if !reflect.DeepEqual(current, m.Config) {
+			if !sameChangeConfig(current, m.Config) {
 				return fmt.Errorf("root configuration changed during synchronization; retry create")
 			}
 		}
@@ -333,7 +333,7 @@ func (e *Engine) owned(m *Manifest, r *RepoState) error {
 	if r.Repository.Name != "root" {
 		expected = filepath.Join(m.Workspace, r.Repository.Path)
 	}
-	if r.Path != expected || m.Workspace != changeWorkspace(e.Root, m.Tag) || r.Origin != filepath.Join(e.Root, r.Repository.Path) {
+	if r.Path != expected || !isChangeWorkspace(e.Root, m.Tag, m.Workspace) || r.Origin != filepath.Join(e.Root, r.Repository.Path) {
 		return fmt.Errorf("repository %s: ownership paths mismatch", r.Repository.Name)
 	}
 	actual, err := filepath.EvalSymlinks(r.Path)
@@ -374,7 +374,7 @@ func (e *Engine) resumeCreate(m *Manifest) error {
 				if err != nil {
 					return err
 				}
-				if !reflect.DeepEqual(current, m.Config) {
+				if !sameChangeConfig(current, m.Config) {
 					return fmt.Errorf("root configuration changed during synchronization; inspect and drop incomplete Change before retry")
 				}
 			}
@@ -436,7 +436,15 @@ func (e *Engine) resumeCreate(m *Manifest) error {
 	return e.store.save(m)
 }
 func (e *Engine) hooks(m *Manifest, r *RepoState, phase string) error {
-	for _, h := range r.Repository.Hooks[phase] {
+	current, err := readConfig(m.Origin)
+	if err != nil {
+		return fmt.Errorf("read current hook configuration: %w", err)
+	}
+	hooks, err := hooksFor(current, r.Repository.Name)
+	if err != nil {
+		return err
+	}
+	for _, h := range hooks[phase] {
 		key := r.Repository.Name + "/" + phase + "/" + h.ID
 		old := m.Hooks[key]
 		if old.Status == "complete" {
@@ -483,6 +491,30 @@ func (e *Engine) hooks(m *Manifest, r *RepoState, phase string) error {
 		}
 	}
 	return nil
+}
+
+func sameChangeConfig(current, recorded Config) bool {
+	current.Root.Hooks = nil
+	for i := range current.Children {
+		current.Children[i].Hooks = nil
+	}
+	recorded.Root.Hooks = nil
+	for i := range recorded.Children {
+		recorded.Children[i].Hooks = nil
+	}
+	return reflect.DeepEqual(current, recorded)
+}
+
+func hooksFor(config Config, repository string) (Hooks, error) {
+	if repository == "root" {
+		return config.Root.Hooks, nil
+	}
+	for _, child := range config.Children {
+		if child.Name == repository {
+			return child.Hooks, nil
+		}
+	}
+	return nil, fmt.Errorf("repository %s is absent from current configuration", repository)
 }
 
 func (e *Engine) Status(m *Manifest) map[string]any {

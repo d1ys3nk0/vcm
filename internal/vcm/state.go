@@ -91,8 +91,7 @@ func (s store) validate(m *Manifest) error {
 	if filepath.Base(common) != ".git" || filepath.Dir(common) != m.Origin {
 		return fmt.Errorf("manifest origin must be the primary workspace checkout")
 	}
-	wantWorkspace := changeWorkspace(m.Origin, m.Tag)
-	if m.Workspace != wantWorkspace {
+	if !isChangeWorkspace(m.Origin, m.Tag, m.Workspace) {
 		return fmt.Errorf("manifest workspace path does not match its identity")
 	}
 	if info, err := os.Lstat(m.Workspace); err == nil && info.Mode()&os.ModeSymlink != 0 {
@@ -111,12 +110,14 @@ func (s store) validate(m *Manifest) error {
 	if strings.TrimSpace(rootURL) == "" || strings.HasPrefix(rootURL, "-") {
 		return fmt.Errorf("manifest has invalid workspace origin URL")
 	}
-	want := append([]Repository{{Name: "root", URL: rootURL, Trunk: m.Config.Root.Trunk, Hooks: m.Config.Root.Hooks}}, ordered...)
+	want := append([]Repository{{Name: "root", URL: rootURL, Trunk: m.Config.Root.Trunk}}, ordered...)
 	if len(m.Repositories) != len(want) {
 		return fmt.Errorf("manifest repository set does not match configuration")
 	}
 	for i, r := range m.Repositories {
-		if !reflect.DeepEqual(r.Repository, want[i]) || r.Origin != filepath.Join(m.Origin, want[i].Path) || r.Path != filepath.Join(m.Workspace, want[i].Path) {
+		repository := r.Repository
+		repository.Hooks = nil
+		if !reflect.DeepEqual(repository, want[i]) || r.Origin != filepath.Join(m.Origin, want[i].Path) || r.Path != filepath.Join(m.Workspace, want[i].Path) {
 			return fmt.Errorf("manifest repository %d ownership does not match configuration", i)
 		}
 		if i > 0 {
@@ -152,16 +153,8 @@ func (s store) validate(m *Manifest) error {
 	if m.Hooks == nil {
 		return fmt.Errorf("manifest hook outcomes must be an object")
 	}
-	knownHooks := map[string]bool{}
-	for _, r := range want {
-		for phase, hooks := range r.Hooks {
-			for _, h := range hooks {
-				knownHooks[r.Name+"/"+phase+"/"+h.ID] = true
-			}
-		}
-	}
 	for key, h := range m.Hooks {
-		if !knownHooks[key] {
+		if !validHookOutcomeKey(key, want) {
 			return fmt.Errorf("unknown recorded hook %s", key)
 		}
 		switch h.Status {
@@ -176,6 +169,20 @@ func (s store) validate(m *Manifest) error {
 		}
 	}
 	return nil
+}
+
+func validHookOutcomeKey(key string, repositories []Repository) bool {
+	parts := strings.Split(key, "/")
+	if len(parts) != 3 || !identity.MatchString(parts[2]) {
+		return false
+	}
+	for _, r := range repositories {
+		if parts[0] != r.Name {
+			continue
+		}
+		return parts[1] == "create" || parts[1] == "drop" || (r.Name == "root" && (parts[1] == "pre-merge" || parts[1] == "post-merge")) || (r.Name != "root" && parts[1] == "merge")
+	}
+	return false
 }
 
 func (s store) save(m *Manifest) error {
@@ -340,4 +347,12 @@ func newTag(slug string) string { return time.Now().UTC().Format("060102150405")
 
 func changeWorkspace(origin, tag string) string {
 	return filepath.Join(filepath.Dir(origin), filepath.Base(origin)+"."+tag)
+}
+
+func legacyChangeWorkspace(origin, tag string) string {
+	return filepath.Join(filepath.Dir(origin), filepath.Base(origin)+"-"+tag)
+}
+
+func isChangeWorkspace(origin, tag, workspace string) bool {
+	return workspace == changeWorkspace(origin, tag) || workspace == legacyChangeWorkspace(origin, tag)
 }

@@ -24,7 +24,7 @@ type Runners struct {
 }
 type Root struct {
 	Trunk string `yaml:"trunk" json:"trunk"`
-	Hooks Hooks  `yaml:"hooks,omitempty" json:"hooks,omitempty"`
+	Hooks Hooks  `yaml:"hooks,omitempty" json:"-"`
 }
 type Repository struct {
 	Name      string   `yaml:"name" json:"name"`
@@ -32,7 +32,7 @@ type Repository struct {
 	URL       string   `yaml:"url" json:"url"`
 	Trunk     string   `yaml:"trunk" json:"trunk"`
 	DependsOn []string `yaml:"depends_on,omitempty" json:"depends_on,omitempty"`
-	Hooks     Hooks    `yaml:"hooks,omitempty" json:"hooks,omitempty"`
+	Hooks     Hooks    `yaml:"hooks,omitempty" json:"-"`
 }
 type Config struct {
 	Version  int          `yaml:"version" json:"version"`
