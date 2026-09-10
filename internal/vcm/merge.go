@@ -7,9 +7,14 @@ import (
 	"strings"
 )
 
+func pendingMergeTargetValid(r *RepoState, target string, mergeCommitValidated bool) bool {
+	return target == r.TargetBefore || mergeCommitValidated && target == r.MergeCommit
+}
+
 func (e *Engine) preflight(m *Manifest) error {
 	for i := range m.Repositories {
 		r := &m.Repositories[i]
+		mergeCommitValidated := false
 		if r.Removed {
 			continue
 		}
@@ -69,6 +74,7 @@ func (e *Engine) preflight(m *Manifest) error {
 				if index != r.MergeTree {
 					return fmt.Errorf("repository %s: index changed during interrupted merge", r.Repository.Name)
 				}
+				mergeCommitValidated = true
 			}
 		}
 		if err := clean(r.Path); err != nil {
@@ -89,7 +95,7 @@ func (e *Engine) preflight(m *Manifest) error {
 		if err != nil {
 			return err
 		}
-		if m.State == "merging" && !r.Merged && r.TargetBefore != "" && target != r.TargetBefore {
+		if m.State == "merging" && !r.Merged && r.TargetBefore != "" && !pendingMergeTargetValid(r, target, mergeCommitValidated) {
 			return fmt.Errorf("repository %s: target changed after merge gate; restore recorded target before retry", r.Repository.Name)
 		}
 		if m.State == "merging" && !r.Merged && r.Source != "" && source != r.Source {

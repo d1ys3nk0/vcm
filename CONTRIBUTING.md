@@ -3,7 +3,7 @@
 Use Go 1.27.1, Git, a POSIX shell, [Task](https://taskfile.dev/), and [Lefthook](https://lefthook.dev/). Version managers such as `mise` can install the required tools. Install the repository hook after cloning:
 
 ```sh
-task setup
+task hooks:install
 go mod download
 task build
 task fix:format

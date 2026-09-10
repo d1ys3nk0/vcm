@@ -1,12 +1,15 @@
 version: '3'
 
+vars:
+  GO_FILES: '{{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}.{{end}}'
+
 tasks:
-  setup:
+  hooks:install:
     desc: Install repository Git hooks
     cmds:
       - lefthook install
 
-  reset:
+  hooks:uninstall:
     desc: Uninstall repository Git hooks
     cmds:
       - lefthook uninstall
@@ -26,7 +29,7 @@ tasks:
   fix:format:
     desc: Format repository files
     cmds:
-      - gofmt -w {{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}$(rg --files -g '*.go'){{end}}
+      - gofmt -w {{.GO_FILES}}
 
   verify:
     desc: Run all local verification checks
@@ -45,7 +48,7 @@ tasks:
   verify:lint:gofmt:
     desc: Verify Go formatting
     cmds:
-      - test -z "$(gofmt -l {{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}$(rg --files -g '*.go'){{end}})"
+      - test -z "$(gofmt -l {{.GO_FILES}})"
 
   verify:lint:go-vet:
     desc: Run Go static analysis
