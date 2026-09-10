@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/d1ys3nk0/vcm/internal/vcm"
 )
 
 func runOutput(t *testing.T, args ...string) (string, error) {
@@ -76,6 +78,36 @@ func cliWorkspace(t *testing.T) string {
 	config := "version: 1\nroot:\n  trunk: main\nchildren:\n- name: api\n  path: repos/api\n  url: /nonexistent-disposable-remote\n  trunk: main\n"
 	if err := os.WriteFile(filepath.Join(root, "vcm.yml"), []byte(config), 0600); err != nil {
 		t.Fatal(err)
+	}
+	canonical, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return canonical
+}
+
+func cliCleanWorkspace(t *testing.T) string {
+	t.Helper()
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+	t.Setenv("GIT_AUTHOR_NAME", "VCM Test")
+	t.Setenv("GIT_AUTHOR_EMAIL", "vcm@example.test")
+	t.Setenv("GIT_COMMITTER_NAME", "VCM Test")
+	t.Setenv("GIT_COMMITTER_EMAIL", "vcm@example.test")
+	root := filepath.Join(t.TempDir(), "workspace")
+	for _, args := range [][]string{{"init", "--initial-branch=main", root}, {"-C", root, "config", "user.name", "VCM Test"}, {"-C", root, "config", "user.email", "vcm@example.test"}} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %s %v", args, out, err)
+		}
+	}
+	config := "version: 1\nroot:\n  trunk: main\nchildren: []\n"
+	if err := os.WriteFile(filepath.Join(root, "vcm.yml"), []byte(config), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"-C", root, "add", "vcm.yml"}, {"-C", root, "commit", "-m", "chore: configure workspace"}} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %s %v", args, out, err)
+		}
 	}
 	canonical, err := filepath.EvalSymlinks(root)
 	if err != nil {
@@ -215,5 +247,56 @@ func TestStatusRequiresManagedSelection(t *testing.T) {
 	}
 	if _, err := runOutput(t, "status", "missing-change", "--workspace", root); err == nil {
 		t.Fatal("status accepted unknown Change")
+	}
+}
+
+func TestCheckAndPruneCLIContracts(t *testing.T) {
+	root := cliCleanWorkspace(t)
+	check, err := runJSON[vcm.AuditReport](t, "check", "--json", "--workspace", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !check.Clean || check.Workspace != root || len(check.Repositories) != 1 {
+		t.Fatalf("unexpected clean check result: %+v", check)
+	}
+	if out, err := exec.Command("git", "-C", root, "branch", "unexpected").CombinedOutput(); err != nil {
+		t.Fatalf("create branch: %s %v", out, err)
+	}
+
+	data, err := runOutput(t, "check", "--json", "--workspace", root)
+	if err == nil {
+		t.Fatal("dirty check returned success")
+	}
+	var dirty vcm.AuditReport
+	if json.Unmarshal([]byte(data), &dirty) != nil || dirty.Clean || len(dirty.Issues) == 0 {
+		t.Fatalf("invalid dirty check payload: %q", data)
+	}
+
+	data, err = runOutput(t, "prune", "--dry-run", "--json", "--workspace", root)
+	if err == nil {
+		t.Fatal("incomplete prune preview returned success")
+	}
+	var preview vcm.PruneReport
+	if json.Unmarshal([]byte(data), &preview) != nil || preview.Complete || len(preview.Actions) != 1 {
+		t.Fatalf("invalid prune preview: %q", data)
+	}
+	if out, err := exec.Command("git", "-C", root, "show-ref", "--verify", "refs/heads/unexpected").CombinedOutput(); err != nil {
+		t.Fatalf("dry run removed branch: %s %v", out, err)
+	}
+
+	oldTerminal, oldInput := stdinIsTerminal, commandInput
+	defer func() { stdinIsTerminal, commandInput = oldTerminal, oldInput }()
+	stdinIsTerminal = func() bool { return false }
+	if _, err := runOutput(t, "prune", "--workspace", root); err == nil || !strings.Contains(err.Error(), "interactive terminal") {
+		t.Fatalf("non-interactive prune accepted: %v", err)
+	}
+	stdinIsTerminal = func() bool { return true }
+	commandInput = strings.NewReader("yes\n")
+	pruned, err := runJSON[vcm.PruneReport](t, "prune", "--json", "--workspace", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pruned.Complete || len(pruned.Actions) != 1 || pruned.Actions[0].Status != vcm.PruneCompleted {
+		t.Fatalf("unexpected prune result: %+v", pruned)
 	}
 }

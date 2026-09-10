@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bufio"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -21,6 +23,7 @@ Usage:
 
 Commands:
   validate             Check vcm.yml and the repository dependency graph.
+  check                Audit repository cleanliness, worktrees, and local branches.
   bootstrap            Clone missing configured repositories and verify existing origins.
   sync                 Fast-forward configured workspace and child trunks from origin.
   create <slug>        Synchronize origins and create an isolated Change workspace.
@@ -28,6 +31,7 @@ Commands:
   status [change]      Show a Change's lifecycle, hooks, merge, and recovery state.
   merge [change]       Run merge hooks and squash-merge child repositories, then the root.
   drop [change]        Remove the resources owned by a completed or discarded Change.
+  prune                Interactively clean retained checkouts and remove unexpected Git resources.
   version              Print the VCM version and source commit.
 
 Global options:
@@ -35,7 +39,7 @@ Global options:
                        directory for vcm.yml at a Git root.
   --json               Emit machine-readable JSON to stdout.
   --dry-run            Show the operation plan without changing files or running hooks.
-                       Supported by bootstrap, sync, create, merge, and drop.
+                       Supported by bootstrap, sync, create, merge, drop, and prune.
   --force              For sync, reset divergent child trunks after creating recovery backups.
                        For drop, preserve recovery backups before discarding changes.
   --only NAMES         For create, include exactly these comma-separated child repositories.
@@ -53,6 +57,9 @@ Examples:
   vcm create improve-search --only core,web
   vcm create improve-search --except devtools
   vcm status 260910120000-improve-search
+  vcm check
+  vcm prune --dry-run
+  vcm prune
   vcm merge --dry-run
   vcm drop 260910120000-improve-search --force
 
@@ -61,6 +68,18 @@ Notes:
   and digits. Commands that change state should be previewed with --dry-run; merge does
   not fetch, pull, or push.
 `
+
+var stdinIsTerminal = func() bool {
+	info, err := os.Stdin.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
+}
+var commandInput io.Reader = os.Stdin
+
+type incompleteResultError struct{ command string }
+
+func (e incompleteResultError) Error() string {
+	return e.command + " found unresolved workspace issues"
+}
 
 func run(args []string) error {
 	flags := flag.NewFlagSet("vcm", flag.ContinueOnError)
@@ -132,8 +151,8 @@ func run(args []string) error {
 	if selectionFlags["except"] && except == "" {
 		return fmt.Errorf("--except contains a blank repository name")
 	}
-	if dry && command != "bootstrap" && command != "sync" && command != "create" && command != "merge" && command != "drop" {
-		return fmt.Errorf("--dry-run is only supported by bootstrap, sync, create, merge, and drop")
+	if dry && command != "bootstrap" && command != "sync" && command != "create" && command != "merge" && command != "drop" && command != "prune" {
+		return fmt.Errorf("--dry-run is only supported by bootstrap, sync, create, merge, drop, and prune")
 	}
 	if command == "version" {
 		return output(versionResult{Version: version, Commit: commit})
@@ -173,6 +192,36 @@ func run(args []string) error {
 		m, err = engine.Select(arg, cwd)
 		if err == nil {
 			result = newStatusResult(m, engine.Status(m))
+		}
+	case "check":
+		var report vcm.AuditReport
+		report, err = engine.Check()
+		if err == nil {
+			result = report
+		}
+	case "prune":
+		var report vcm.PruneReport
+		if dry {
+			report, err = engine.PruneDryRun()
+		} else {
+			if !stdinIsTerminal() {
+				return fmt.Errorf("prune requires an interactive terminal; use --dry-run for a non-interactive audit")
+			}
+			reader := bufio.NewReader(commandInput)
+			confirm := func(action vcm.PruneAction) bool {
+				fmt.Fprintf(os.Stderr, "%s %s in repository %s? [y/N] ", pruneActionPrompt(action.Action), action.Target, action.Repository)
+				answer, _ := reader.ReadString('\n')
+				answer = strings.TrimSpace(answer)
+				return strings.EqualFold(answer, "y") || strings.EqualFold(answer, "yes")
+			}
+			err = engine.Mutate(func() error {
+				var pruneErr error
+				report, pruneErr = engine.Prune(confirm)
+				return pruneErr
+			})
+		}
+		if err == nil {
+			result = report
 		}
 	case "bootstrap", "sync", "create", "merge", "drop":
 		var m *vcm.Manifest
@@ -239,7 +288,33 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	return output(result)
+	if err = output(result); err != nil {
+		return err
+	}
+	switch value := result.(type) {
+	case vcm.AuditReport:
+		if !value.Clean {
+			return incompleteResultError{command: "check"}
+		}
+	case vcm.PruneReport:
+		if !value.Complete {
+			return incompleteResultError{command: "prune"}
+		}
+	}
+	return nil
+}
+
+func pruneActionPrompt(action string) string {
+	switch action {
+	case vcm.PruneReset:
+		return "Discard tracked and untracked changes from"
+	case vcm.PruneRemoveWorktree:
+		return "Delete unexpected worktree"
+	case vcm.PruneDeleteBranch:
+		return "Delete unexpected branch"
+	default:
+		return "Apply prune action to"
+	}
 }
 
 func requestsJSON(args []string) bool {
@@ -264,6 +339,10 @@ func requestsJSON(args []string) bool {
 
 func runMain(args []string) int {
 	if err := run(args); err != nil {
+		var incomplete incompleteResultError
+		if errors.As(err, &incomplete) {
+			return 1
+		}
 		writeError(os.Stderr, requestsJSON(args), err)
 		return 1
 	}

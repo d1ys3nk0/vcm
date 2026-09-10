@@ -18,4 +18,8 @@ Pending synchronization journals are stored as `vcm/*.sync` under the workspace 
 
 Ordinary drop also rejects ignored filesystem content. Forced drop preserves discarded content in recovery backups, but still rejects foreign nested Git repositories; relocate those repositories explicitly before retrying.
 
+Use `vcm check` to inventory dirty registered worktrees, unfinished Git operations, and local branches or worktrees that are not authorized by the configured trunks and live VCM state. Remote-tracking and recovery refs are not pruning targets. Missing resources and ownership mismatches require manual investigation; VCM protects live-state branches and paths when their registration disagrees with current configuration.
+
+Use `vcm prune --dry-run` to review cleanup candidates. If any state file cannot be validated, pruning remains incomplete and produces no actions because that state may authorize resources that VCM cannot safely identify. A real prune requests approval for every reset, worktree removal, and branch deletion. Retained checkout resets discard tracked and ordinary untracked content at the current `HEAD` but preserve ignored files. Unexpected worktree removal deletes the entire worktree, including ignored files. Branches are deleted only after worktree processing and only if their object ID still matches the audited value. Prune creates no recovery archive or recovery ref: each confirmation is authorization for irreversible deletion, so preserve anything needed before answering yes.
+
 VCM only removes resources it recorded as owned. If paths, branches, or worktrees were replaced manually, restore the expected ownership or resolve the discrepancy explicitly. Never delete an unfamiliar path merely because its name resembles a Change.

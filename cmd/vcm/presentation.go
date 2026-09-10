@@ -325,6 +325,50 @@ func renderHuman(out io.Writer, result any) error {
 	case commandResult:
 		_, err := fmt.Fprintf(out, "%s complete.\nWorkspace: %s\n", commandLabel(value.Command), value.Workspace)
 		return err
+	case vcm.AuditReport:
+		repositories := [][]string{{"Repository", "State", "Origin"}}
+		for _, repository := range value.Repositories {
+			state := "clean"
+			if !repository.Clean {
+				state = "issues"
+			}
+			repositories = append(repositories, []string{repository.Name, state, repository.Origin})
+		}
+		if err := renderTable(out, repositories); err != nil {
+			return err
+		}
+		if len(value.Issues) == 0 {
+			_, err := fmt.Fprintln(out, "\nWorkspace clean.")
+			return err
+		}
+		if _, err := fmt.Fprintln(out, "\nFindings:"); err != nil {
+			return err
+		}
+		issues := [][]string{{"Repository", "Kind", "Target", "Detail"}}
+		for _, issue := range value.Issues {
+			issues = append(issues, []string{issue.Repository, issue.Kind, auditIssueTarget(issue), issue.Detail})
+		}
+		return renderTable(out, issues)
+	case vcm.PruneReport:
+		actions := [][]string{{"Repository", "Action", "Target", "Status", "Detail"}}
+		for _, action := range value.Actions {
+			actions = append(actions, []string{action.Repository, action.Action, action.Target, action.Status, action.Detail})
+		}
+		if err := renderTable(out, actions); err != nil {
+			return err
+		}
+		if len(value.RemainingIssues) == 0 {
+			_, err := fmt.Fprintln(out, "\nPrune complete.")
+			return err
+		}
+		if _, err := fmt.Fprintln(out, "\nRemaining findings:"); err != nil {
+			return err
+		}
+		issues := [][]string{{"Repository", "Kind", "Target", "Detail"}}
+		for _, issue := range value.RemainingIssues {
+			issues = append(issues, []string{issue.Repository, issue.Kind, auditIssueTarget(issue), issue.Detail})
+		}
+		return renderTable(out, issues)
 	case createResult:
 		_, err := fmt.Fprintf(out, "Created Change %s with %d repositories.\nWorkspace: %s\n", value.Tag, len(value.Repositories), value.Workspace)
 		return err
@@ -428,6 +472,16 @@ func renderHuman(out io.Writer, result any) error {
 	default:
 		return fmt.Errorf("unsupported output type %T", result)
 	}
+}
+
+func auditIssueTarget(issue vcm.AuditIssue) string {
+	if issue.Path != "" && issue.Branch != "" {
+		return issue.Path + " (" + issue.Branch + ")"
+	}
+	if issue.Path != "" {
+		return issue.Path
+	}
+	return issue.Branch
 }
 
 func writeError(out io.Writer, jsonOutput bool, err error) {
