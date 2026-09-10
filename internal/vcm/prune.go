@@ -106,7 +106,7 @@ func plannedActions(inv auditInventory) []PruneAction {
 	if inv.Unsafe {
 		return actions
 	}
-	names := sortedPaths(inv.Repositories)
+	names := inv.RepositoryOrder
 	for _, name := range names {
 		repository := inv.Repositories[name]
 		for _, path := range sortedPaths(repository.DirtyExpected) {
@@ -146,7 +146,7 @@ func (e *Engine) Prune(confirm ConfirmPrune) (PruneReport, error) {
 		report.RemainingIssues = inv.Report.Issues
 		return report, nil
 	}
-	names := sortedPaths(inv.Repositories)
+	names := inv.RepositoryOrder
 	for _, name := range names {
 		repository := inv.Repositories[name]
 		for _, path := range sortedPaths(repository.DirtyExpected) {
@@ -192,7 +192,7 @@ func (e *Engine) Prune(confirm ConfirmPrune) (PruneReport, error) {
 		report.RemainingIssues = branchesInv.Report.Issues
 		return report, nil
 	}
-	names = sortedPaths(branchesInv.Repositories)
+	names = branchesInv.RepositoryOrder
 	for _, name := range names {
 		repository := branchesInv.Repositories[name]
 		for _, branch := range sortedPaths(repository.UnexpectedBranches) {

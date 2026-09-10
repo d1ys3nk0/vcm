@@ -3,8 +3,11 @@ package vcm
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+
+	"go.yaml.in/yaml/v3"
 )
 
 func issueExists(report AuditReport, repository, kind, target string) bool {
@@ -14,6 +17,180 @@ func issueExists(report AuditReport, repository, kind, target string) bool {
 		}
 	}
 	return false
+}
+
+func configureChildren(t *testing.T, e *Engine, names ...string) {
+	t.Helper()
+	byName := make(map[string]Repository, len(e.Config.Children))
+	for _, repository := range e.Config.Children {
+		byName[repository.Name] = repository
+	}
+	children := make([]Repository, 0, len(names))
+	for _, name := range names {
+		repository, ok := byName[name]
+		if !ok {
+			t.Fatalf("unknown fixture repository %q", name)
+		}
+		children = append(children, repository)
+	}
+	e.Config.Children = children
+	e.store.config = e.Config
+	data, err := yaml.Marshal(e.Config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commitFile(t, e.Root, "vcm.yml", string(data))
+}
+
+func auditRepositoryNames(report AuditReport) []string {
+	names := make([]string, 0, len(report.Repositories))
+	for _, repository := range report.Repositories {
+		names = append(names, repository.Name)
+	}
+	return names
+}
+
+func assertPruneOrder(t *testing.T, actions []PruneAction, repositories []string) {
+	t.Helper()
+	phases := []string{PruneReset, PruneRemoveWorktree, PruneDeleteBranch}
+	lastPhase := -1
+	for _, action := range actions {
+		phase := -1
+		for i, candidate := range phases {
+			if action.Action == candidate {
+				phase = i
+				break
+			}
+		}
+		if phase < lastPhase {
+			t.Fatalf("actions out of phase order: %+v", actions)
+		}
+		lastPhase = phase
+	}
+	for _, phase := range phases {
+		got := []string{}
+		last := ""
+		lastTarget := ""
+		for _, action := range actions {
+			if action.Action != phase {
+				continue
+			}
+			if action.Repository != last {
+				got = append(got, action.Repository)
+				last = action.Repository
+				lastTarget = ""
+			}
+			if action.Target < lastTarget {
+				t.Fatalf("%s targets for %s are not sorted: %+v", phase, action.Repository, actions)
+			}
+			lastTarget = action.Target
+		}
+		if !reflect.DeepEqual(got, repositories) {
+			t.Fatalf("%s repository order = %v, want %v; actions: %+v", phase, got, repositories, actions)
+		}
+	}
+}
+
+func TestCheckPreservesConfiguredRepositoryAndIssueOrder(t *testing.T) {
+	e := fixture(t, 3)
+	configureChildren(t, e, "repo2", "repo0", "repo1")
+	want := []string{"root", "repo2", "repo0", "repo1"}
+
+	report, err := e.Check()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.Clean || !reflect.DeepEqual(auditRepositoryNames(report), want) {
+		t.Fatalf("clean audit repository order = %v, want %v; report: %+v", auditRepositoryNames(report), want, report)
+	}
+
+	paths := map[string]string{"root": e.Root}
+	for _, repository := range e.Config.Children {
+		paths[repository.Name] = filepath.Join(e.Root, repository.Path)
+	}
+	for _, name := range want {
+		put(t, filepath.Join(paths[name], "dirty.txt"), "dirty\n")
+		mustGit(t, paths[name], "branch", "z-stray")
+		mustGit(t, paths[name], "branch", "a-stray")
+	}
+	report, err = e.Check()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Clean || !reflect.DeepEqual(auditRepositoryNames(report), want) {
+		t.Fatalf("issue audit repository order = %v, want %v; report: %+v", auditRepositoryNames(report), want, report)
+	}
+	rank := map[string]int{"root": 0, "repo2": 1, "repo0": 2, "repo1": 3}
+	lastRank := -1
+	lastKey := ""
+	for _, issue := range report.Issues {
+		currentRank := rank[issue.Repository]
+		key := issue.Kind + "\x00" + issue.Path + "\x00" + issue.Branch
+		if currentRank < lastRank || currentRank == lastRank && key < lastKey {
+			t.Fatalf("issues are not grouped and sorted in repository order: %+v", report.Issues)
+		}
+		if currentRank != lastRank {
+			lastKey = ""
+		}
+		lastRank, lastKey = currentRank, key
+	}
+}
+
+func TestCheckAppendsStaleRepositoriesByName(t *testing.T) {
+	e := fixture(t, 4)
+	if _, err := e.Create("stale-order"); err != nil {
+		t.Fatal(err)
+	}
+	configureChildren(t, e, "repo3", "repo0")
+
+	report, err := e.Check()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"root", "repo3", "repo0", "repo1", "repo2"}
+	if report.Clean || !reflect.DeepEqual(auditRepositoryNames(report), want) {
+		t.Fatalf("audit repository order = %v, want %v; report: %+v", auditRepositoryNames(report), want, report)
+	}
+	if len(report.Issues) < 2 || report.Issues[len(report.Issues)-2].Repository != "repo1" || report.Issues[len(report.Issues)-1].Repository != "repo2" {
+		t.Fatalf("stale repository findings are not appended by name: %+v", report.Issues)
+	}
+}
+
+func TestPrunePreservesConfiguredRepositoryOrderWithinPhases(t *testing.T) {
+	e := fixture(t, 3)
+	configureChildren(t, e, "repo2", "repo0", "repo1")
+	want := []string{"root", "repo2", "repo0", "repo1"}
+	paths := map[string]string{"root": e.Root}
+	for _, repository := range e.Config.Children {
+		paths[repository.Name] = filepath.Join(e.Root, repository.Path)
+	}
+	for _, name := range want {
+		origin := paths[name]
+		put(t, filepath.Join(origin, "dirty.txt"), "dirty\n")
+		mustGit(t, origin, "branch", "z-stray")
+		worktree := filepath.Join(filepath.Dir(e.Root), name+"-unexpected-worktree")
+		mustGit(t, origin, "worktree", "add", "-b", "a-worktree", worktree, "main")
+	}
+
+	preview, err := e.PruneDryRun()
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertPruneOrder(t, preview.Actions, want)
+
+	var report PruneReport
+	err = e.Mutate(func() error {
+		var pruneErr error
+		report, pruneErr = e.Prune(func(PruneAction) bool { return true })
+		return pruneErr
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.Complete {
+		t.Fatalf("prune incomplete: %+v", report)
+	}
+	assertPruneOrder(t, report.Actions, want)
 }
 
 func TestCheckAuditsCleanWorkspaceAndManagedChanges(t *testing.T) {

@@ -62,9 +62,10 @@ type repositoryAudit struct {
 }
 
 type auditInventory struct {
-	Report       AuditReport
-	Repositories map[string]*repositoryAudit
-	Unsafe       bool
+	Report          AuditReport
+	Repositories    map[string]*repositoryAudit
+	RepositoryOrder []string
+	Unsafe          bool
 }
 
 func canonicalPath(path string) string {
@@ -184,6 +185,7 @@ func (e *Engine) audit() (auditInventory, error) {
 	configured := map[string]bool{}
 	for _, repository := range repositories {
 		configured[repository.Name] = true
+		inv.RepositoryOrder = append(inv.RepositoryOrder, repository.Name)
 		origin := e.Root
 		if repository.Name != "root" {
 			origin = filepath.Join(e.Root, repository.Path)
@@ -307,7 +309,7 @@ func (e *Engine) audit() (auditInventory, error) {
 		}
 	}
 
-	for name := range configured {
+	for _, name := range inv.RepositoryOrder {
 		repo := inv.Repositories[name]
 		cleanRepo := true
 		for _, issue := range inv.Report.Issues {
@@ -318,17 +320,26 @@ func (e *Engine) audit() (auditInventory, error) {
 		}
 		inv.Report.Repositories = append(inv.Report.Repositories, AuditRepository{Name: name, Origin: repo.Origin, Clean: cleanRepo})
 	}
+	stale := map[string]bool{}
 	for _, issue := range inv.Report.Issues {
 		if configured[issue.Repository] {
 			continue
 		}
-		configured[issue.Repository] = true
-		inv.Report.Repositories = append(inv.Report.Repositories, AuditRepository{Name: issue.Repository, Clean: false})
+		stale[issue.Repository] = true
 	}
-	sort.Slice(inv.Report.Repositories, func(i, j int) bool { return inv.Report.Repositories[i].Name < inv.Report.Repositories[j].Name })
+	for _, name := range sortedPaths(stale) {
+		inv.Report.Repositories = append(inv.Report.Repositories, AuditRepository{Name: name, Clean: false})
+	}
+	repositoryRank := make(map[string]int, len(inv.Report.Repositories))
+	for rank, repository := range inv.Report.Repositories {
+		repositoryRank[repository.Name] = rank
+	}
 	sort.Slice(inv.Report.Issues, func(i, j int) bool {
 		a, b := inv.Report.Issues[i], inv.Report.Issues[j]
-		return a.Repository+"\x00"+a.Kind+"\x00"+a.Path+"\x00"+a.Branch < b.Repository+"\x00"+b.Kind+"\x00"+b.Path+"\x00"+b.Branch
+		if repositoryRank[a.Repository] != repositoryRank[b.Repository] {
+			return repositoryRank[a.Repository] < repositoryRank[b.Repository]
+		}
+		return a.Kind+"\x00"+a.Path+"\x00"+a.Branch+"\x00"+a.Detail < b.Kind+"\x00"+b.Path+"\x00"+b.Branch+"\x00"+b.Detail
 	})
 	inv.Report.Clean = len(inv.Report.Issues) == 0
 	return inv, nil
