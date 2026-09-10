@@ -47,6 +47,7 @@ type Manifest struct {
 	Hooks        map[string]HookState `json:"-"`
 	Backups      []string             `json:"-"`
 	Missing      []string             `json:"-"`
+	MergeMessage string               `json:"-"`
 }
 type persistedManifest struct {
 	Version      int                           `json:"version"`
@@ -54,6 +55,7 @@ type persistedManifest struct {
 	Repositories map[string]persistedRepoState `json:"repositories"`
 	Hooks        map[string]HookState          `json:"hooks"`
 	Backups      []string                      `json:"backups,omitempty"`
+	MergeMessage string                        `json:"merge_message,omitempty"`
 }
 type persistedRepoState struct {
 	Base         string `json:"base,omitempty"`
@@ -105,11 +107,16 @@ func validateIdentity(tag string) error {
 	return nil
 }
 func validatePersisted(s store, tag string, p *persistedManifest) error {
-	if p.Version != 1 {
+	if p.Version != 1 && p.Version != 2 {
 		return fmt.Errorf("invalid state version %d", p.Version)
 	}
 	if err := validateIdentity(tag); err != nil {
 		return err
+	}
+	if p.MergeMessage != "" {
+		if err := ValidateMergeMessage(p.MergeMessage); err != nil {
+			return fmt.Errorf("invalid persisted merge message: %w", err)
+		}
 	}
 	if _, ok := p.Repositories["root"]; !ok {
 		return fmt.Errorf("manifest has no root repository state")
@@ -133,13 +140,13 @@ func validatePersisted(s store, tag string, p *persistedManifest) error {
 			return fmt.Errorf("repository %s has an incomplete merge intent", name)
 		}
 		switch r.Intent {
-		case "", "create", "merge", "remove":
+		case "", "create", "merge", "refresh", "remove":
 		default:
 			return fmt.Errorf("repository %s has invalid intent", name)
 		}
 	}
 	switch p.State {
-	case "creating", "ready", "merging", "merge-finalizing", "dropping", "dropped":
+	case "creating", "ready", "refreshing", "merging", "merge-finalizing", "dropping", "dropped":
 	default:
 		return fmt.Errorf("invalid manifest lifecycle state")
 	}
@@ -174,14 +181,14 @@ func validHookOutcomeKey(key string, repositories map[string]persistedRepoState)
 	return hookPhases[parts[1]]
 }
 func persisted(m *Manifest) persistedManifest {
-	p := persistedManifest{Version: 1, State: m.State, Repositories: map[string]persistedRepoState{}, Hooks: m.Hooks, Backups: m.Backups}
+	p := persistedManifest{Version: 2, State: m.State, Repositories: map[string]persistedRepoState{}, Hooks: m.Hooks, Backups: m.Backups, MergeMessage: m.MergeMessage}
 	for _, r := range m.Repositories {
 		p.Repositories[r.Repository.Name] = persistedRepoState{r.Base, r.Source, r.Target, r.TargetBefore, r.MergeTree, r.MergeCommit, r.Intent, r.Owned, r.Merged, r.Removed}
 	}
 	return p
 }
 func (s store) save(m *Manifest) error {
-	if m.Version != 1 {
+	if m.Version != 1 && m.Version != 2 {
 		return fmt.Errorf("invalid state version %d", m.Version)
 	}
 	p := persisted(m)
@@ -245,7 +252,7 @@ func (s store) hydrate(tag string, p persistedManifest) (*Manifest, error) {
 	} else if err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
-	m := &Manifest{Version: 1, Tag: tag, Slug: tag[13:], Workspace: workspace, Origin: root, Config: config, State: p.State, Hooks: p.Hooks, Backups: p.Backups}
+	m := &Manifest{Version: 2, Tag: tag, Slug: tag[13:], Workspace: workspace, Origin: root, Config: config, State: p.State, Hooks: p.Hooks, Backups: p.Backups, MergeMessage: p.MergeMessage}
 	rootURL, _ := git(root, "remote", "get-url", "origin")
 	appendState := func(repository Repository) {
 		state := p.Repositories[repository.Name]

@@ -68,6 +68,7 @@ Each hook has a stable `id` and exactly one nonblank `shell` or `python` body. R
 | --- | --- |
 | `VCM_CHANGE_TAG` | Timestamped Change identity and branch name |
 | `VCM_CHANGE_SLUG` | User-supplied Change slug |
+| `VCM_SELECTED_REPOSITORIES` | Ordered comma-separated inventory: `root` followed by selected children |
 | `VCM_ROOT` | Change root checkout |
 | `VCM_ROOT_ORIGIN` | Original root checkout |
 | `VCM_REPOSITORY_NAME` | Child name, or `root` for root hooks |
@@ -78,7 +79,7 @@ Each hook has a stable `id` and exactly one nonblank `shell` or `python` body. R
 
 Create synchronizes every selected base repository, runs root `create-before`, creates the root worktree, then runs each child's `create-before`, creates its worktree, and runs its `create-after` in dependency order. Root `create-after` runs after all selected worktrees exist. Commits produced by `create-before` are included in that repository's creation baseline.
 
-Merge runs root `merge-before`, then each child's `merge-before` and local integration in dependency order, and finally integrates the root. VCM removes all managed worktrees, runs child `merge-after` hooks in dependency order, and runs root `merge-after` last. Drop runs root `drop-before` while all selected worktrees exist, then processes children in reverse dependency order by running `drop-before`, removing the owned worktree, and running `drop-after`; it removes the root last and runs root `drop-after`. Hooks for unselected repositories and resources never created are skipped.
+Merge runs every selected repository's `merge-before` hook before changing any trunk, freezes all source and target revisions, prepares squash commits, then updates child trunks in dependency order and the root last. A fresh merge requires one Conventional Commit subject; every changed repository receives that subject and a `VCM-Change` footer, while unchanged trees create no commit. VCM then removes all managed worktrees, runs child `merge-after` hooks in dependency order, and runs root `merge-after` last. Drop runs root `drop-before` while all selected worktrees exist, then processes children in reverse dependency order by running `drop-before`, removing the owned worktree, and running `drop-after`; it removes the root last and runs root `drop-after`. Hooks for unselected repositories and resources never created are skipped.
 
 Hooks own staging and committing their output. Successful hooks must leave their checkout clean. Failures preserve files for inspection and repair. Hooks must be idempotent: a process interruption can leave external effects whose completion VCM cannot determine. Treat hooks as trusted executable project code.
 

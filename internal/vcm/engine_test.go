@@ -113,7 +113,7 @@ func TestCreateMergeLifecycle(t *testing.T) {
 		commitFile(t, m.Repositories[i].Path, "feature.txt", "feature\n")
 	}
 	commitFile(t, m.Workspace, "product.txt", "new\n")
-	if err = e.Merge(m); err != nil {
+	if err = e.Merge(m, "feat: test change"); err != nil {
 		t.Fatal(err)
 	}
 	if m.State != "dropped" {
@@ -129,8 +129,139 @@ func TestCreateMergeLifecycle(t *testing.T) {
 			}
 		}
 	}
+	if err = e.Merge(m, "feat: test change"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMergeMessageContract(t *testing.T) {
+	e := fixture(t, 2)
+	m, err := e.Create("message-contract")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range m.Repositories {
+		commitFile(t, m.Repositories[i].Path, "changed.txt", "changed\n")
+	}
+	if err = e.Merge(m); err == nil || !strings.Contains(err.Error(), "--message") {
+		t.Fatalf("fresh merge accepted no message: %v", err)
+	}
+	if err = e.Merge(m, "not conventional"); err == nil {
+		t.Fatal("fresh merge accepted invalid message")
+	}
+	if err = ValidateMergeMessage("ops: custom conventional type"); err != nil {
+		t.Fatal(err)
+	}
+	// Persist the subject at the start, then simulate an interrupted gate.
+	allow := filepath.Join(filepath.Dir(e.Root), "allow-message-merge")
+	e.Config.Root.Hooks = Hooks{HookMergeBefore: {{ID: "stop", Shell: `test -f "` + allow + `"`}}}
+	saveContractConfig(t, e)
+	if err = e.Refresh(m); err != nil {
+		t.Fatal(err)
+	}
+	if err = e.Merge(m, "feat: shared subject"); err == nil {
+		t.Fatal("expected gate interruption")
+	}
+	if m.MergeMessage != "feat: shared subject" {
+		t.Fatalf("message not persisted: %q", m.MergeMessage)
+	}
+	if err = e.Merge(m, "fix: replacement"); err == nil {
+		t.Fatal("retry accepted replacement message")
+	}
+	put(t, allow, "allowed")
 	if err = e.Merge(m); err != nil {
 		t.Fatal(err)
+	}
+	for _, r := range m.Repositories {
+		body := mustGit(t, r.Origin, "log", "-1", "--format=%B")
+		if !strings.Contains(body, "feat: shared subject") || !strings.Contains(body, "VCM-Change: "+m.Tag) {
+			t.Fatalf("repository %s commit message: %q", r.Repository.Name, body)
+		}
+	}
+}
+
+func TestRefreshAdvancedAndSelectedRepositories(t *testing.T) {
+	e := fixture(t, 2)
+	m, err := e.CreateSelected("refresh-selected", "repo0", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	commitFile(t, m.Repositories[1].Path, "feature.txt", "feature\n")
+	commitFile(t, m.Repositories[1].Origin, "trunk.txt", "trunk\n")
+	if err = e.Merge(m, "feat: selected refresh"); err == nil || !strings.Contains(err.Error(), "vcm refresh") {
+		t.Fatalf("merge did not block advanced target: %v", err)
+	}
+	if err = e.Refresh(m); err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range []string{"feature.txt", "trunk.txt"} {
+		if _, err = os.Stat(filepath.Join(m.Repositories[1].Path, file)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(m.Repositories) != 2 {
+		t.Fatal("refresh changed partial selection")
+	}
+	base := m.Repositories[1].Base
+	if err = e.Refresh(m); err != nil {
+		t.Fatal(err)
+	}
+	if m.Repositories[1].Base != base {
+		t.Fatal("unchanged refresh advanced base")
+	}
+}
+
+func TestRefreshConflictRepairAndTargetDrift(t *testing.T) {
+	e := fixture(t, 1)
+	m, err := e.Create("refresh-conflict")
+	if err != nil {
+		t.Fatal(err)
+	}
+	commitFile(t, m.Repositories[1].Path, "conflict.txt", "source\n")
+	commitFile(t, m.Repositories[1].Origin, "conflict.txt", "target\n")
+	if err = e.Refresh(m); err == nil || !strings.Contains(err.Error(), "conflict preserved") {
+		t.Fatalf("refresh conflict not preserved: %v", err)
+	}
+	commitFile(t, m.Repositories[1].Origin, "drift.txt", "drift\n")
+	if err = e.Refresh(m); err == nil || !strings.Contains(err.Error(), "target drifted") {
+		t.Fatalf("target drift accepted: %v", err)
+	}
+	// Restore the checkpointed target, resolve and commit the preserved merge.
+	mustGit(t, m.Repositories[1].Origin, "reset", "--hard", m.Repositories[1].TargetBefore)
+	put(t, filepath.Join(m.Repositories[1].Path, "conflict.txt"), "resolved\n")
+	mustGit(t, m.Repositories[1].Path, "add", "conflict.txt")
+	mustGit(t, m.Repositories[1].Path, "commit", "--no-edit")
+	if err = e.Refresh(m); err != nil {
+		t.Fatal(err)
+	}
+	if m.State != "ready" || m.Repositories[1].Intent != "" {
+		t.Fatalf("refresh did not recover: %+v", m.Repositories[1])
+	}
+}
+
+func TestRefreshRecoversPreparedIndex(t *testing.T) {
+	e := fixture(t, 1)
+	m, err := e.Create("refresh-index")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &m.Repositories[1]
+	commitFile(t, r.Origin, "trunk.txt", "trunk\n")
+	r.Source = mustGit(t, r.Path, "rev-parse", "HEAD")
+	r.TargetBefore = mustGit(t, r.Origin, "rev-parse", "HEAD")
+	r.MergeTree = strings.Split(mustGit(t, r.Path, "merge-tree", "--write-tree", r.Source, r.TargetBefore), "\n")[0]
+	r.MergeCommit = mustGit(t, r.Path, "commit-tree", r.MergeTree, "-p", r.Source, "-p", r.TargetBefore, "-m", "chore(vcm): refresh test")
+	expected := r.MergeCommit
+	r.Intent, m.State = "refresh", "refreshing"
+	if err = e.store.save(m); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, r.Path, "read-tree", "-u", "-m", r.Source, r.MergeCommit)
+	if err = e.Refresh(m); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustGit(t, r.Path, "rev-parse", "HEAD"); got != expected {
+		t.Fatalf("prepared refresh not resumed: %s", got)
 	}
 }
 
@@ -186,7 +317,7 @@ func TestCreateSelectsExactRepositories(t *testing.T) {
 			t.Fatalf("unexpected selected hook output %q: %v", data, err)
 		}
 		commitFile(t, m.Repositories[1].Path, "partial.txt", "selected\n")
-		if err = e.Merge(m); err != nil {
+		if err = e.Merge(m, "feat: test change"); err != nil {
 			t.Fatal(err)
 		}
 		if _, err = os.Stat(filepath.Join(m.Repositories[1].Origin, "partial.txt")); err != nil {
@@ -286,7 +417,7 @@ func TestRemovedSelectedRepositoryBlocksMutationButStatusReportsIt(t *testing.T)
 	if len(report.Repositories) != 2 || !strings.Contains(report.Repositories[1].Error, "absent from current configuration") {
 		t.Fatalf("status did not report missing selected repository: %+v", report.Repositories)
 	}
-	if err = e.Merge(m); err == nil || !strings.Contains(err.Error(), "restore its vcm.yml entry") {
+	if err = e.Merge(m, "feat: test change"); err == nil || !strings.Contains(err.Error(), "restore its vcm.yml entry") {
 		t.Fatalf("merge did not block missing selected repository: %v", err)
 	}
 	e.Force = true
@@ -313,7 +444,10 @@ func TestRepositoryAddedDuringActiveChangeIsSkippedByMergeAndDrop(t *testing.T) 
 		t.Fatalf("newly configured repository entered active Change: %+v", m.Repositories)
 	}
 	commitFile(t, m.Repositories[1].Path, "selected.txt", "merged\n")
-	if err = e.Merge(m); err != nil {
+	if err = e.Refresh(m); err != nil {
+		t.Fatal(err)
+	}
+	if err = e.Merge(m, "feat: test change"); err != nil {
 		t.Fatal(err)
 	}
 	if m.State != "dropped" {
@@ -338,7 +472,7 @@ func TestConflictPreflightDoesNotPartiallyMerge(t *testing.T) {
 	commitFile(t, r.Path, "file.txt", "source\n")
 	commitFile(t, r.Origin, "file.txt", "target\n")
 	before := mustGit(t, m.Repositories[1].Origin, "rev-parse", "HEAD")
-	if err = e.Merge(m); err == nil {
+	if err = e.Merge(m, "feat: test change"); err == nil {
 		t.Fatal("expected conflict")
 	}
 	if after := mustGit(t, m.Repositories[1].Origin, "rev-parse", "HEAD"); before != after {
@@ -355,7 +489,10 @@ func TestPostMergeFailureResumesWithoutDuplicate(t *testing.T) {
 	sentinel := filepath.Join(filepath.Dir(e.Root), "allow")
 	e.Config.Root.Hooks = Hooks{HookMergeAfter: {{ID: "gate", Shell: "test -f " + sentinel}}}
 	saveContractConfig(t, e)
-	if err = e.Merge(m); err == nil {
+	if err = e.Refresh(m); err != nil {
+		t.Fatal(err)
+	}
+	if err = e.Merge(m, "feat: test change"); err == nil {
 		t.Fatal("expected hook failure")
 	}
 	target := mustGit(t, m.Repositories[1].Origin, "rev-parse", "HEAD")
@@ -371,7 +508,7 @@ func TestPostMergeFailureResumesWithoutDuplicate(t *testing.T) {
 		}
 	}
 	put(t, sentinel, "yes")
-	if err = e.Merge(m); err != nil {
+	if err = e.Merge(m, "feat: test change"); err != nil {
 		t.Fatal(err)
 	}
 	if target != mustGit(t, m.Repositories[1].Origin, "rev-parse", "HEAD") {
@@ -458,20 +595,20 @@ func TestMergeRejectsTargetDriftBeforeFurtherIntegration(t *testing.T) {
 	for _, repository := range m.Repositories[1:] {
 		commitFile(t, repository.Path, "feature.txt", "reviewed\n")
 	}
-	if err = e.Merge(m); err == nil {
+	if err = e.Merge(m, "feat: test change"); err == nil {
 		t.Fatal("expected second repository gate failure")
 	}
-	if !m.Repositories[1].Merged {
-		t.Fatal("first completed integration was not checkpointed")
+	if m.Repositories[1].Merged {
+		t.Fatal("late hook failure mutated an earlier trunk")
 	}
-	firstTarget := m.Repositories[1].Target
+	firstTarget := mustGit(t, m.Repositories[1].Origin, "rev-parse", "HEAD")
 	commitFile(t, e.Root, "unexpected.txt", "target drift\n")
 	put(t, allow, "allowed")
 	m, err = e.store.load(m.Tag)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = e.Merge(m); err == nil || !strings.Contains(err.Error(), "target changed after merge gate") {
+	if err = e.Merge(m, "feat: test change"); err == nil || !strings.Contains(err.Error(), "target advanced") {
 		t.Fatalf("target drift accepted: %v", err)
 	}
 	if got := mustGit(t, m.Repositories[1].Origin, "rev-parse", "HEAD"); got != firstTarget {
@@ -665,7 +802,7 @@ func TestMergeRecoversPreparedIndex(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = e.Merge(m); err != nil {
+	if err = e.Merge(m, "feat: test change"); err != nil {
 		t.Fatal(err)
 	}
 	if got := mustGit(t, r.Origin, "rev-parse", "HEAD"); got != r.MergeCommit {
@@ -682,7 +819,10 @@ func TestMergeCompatibleAdvancedTrunkAndUnchanged(t *testing.T) {
 	commitFile(t, r.Path, "source.txt", "source\n")
 	commitFile(t, r.Origin, "target.txt", "target\n")
 	unchanged := mustGit(t, m.Repositories[2].Origin, "rev-parse", "HEAD")
-	if err = e.Merge(m); err != nil {
+	if err = e.Refresh(m); err != nil {
+		t.Fatal(err)
+	}
+	if err = e.Merge(m, "feat: test change"); err != nil {
 		t.Fatal(err)
 	}
 	if mustGit(t, m.Repositories[2].Origin, "rev-parse", "HEAD") != unchanged {

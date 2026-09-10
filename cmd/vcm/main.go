@@ -29,7 +29,8 @@ Commands:
   create <slug>        Synchronize origins and create an isolated Change workspace.
   list                 List recorded Changes.
   status [change]      Show a Change's lifecycle, hooks, merge, and recovery state.
-  merge [change]       Run merge hooks and squash-merge child repositories, then the root.
+  refresh [change]     Merge advanced local trunks into a ready Change; rerun verification.
+  merge [change]       Gate and squash-merge with a required Conventional Commit subject.
   drop [change]        Remove the resources owned by a completed or discarded Change.
   prune                Interactively clean retained checkouts and remove unexpected Git resources.
   version              Print the VCM version and source commit.
@@ -44,6 +45,7 @@ Global options:
                        For drop, preserve recovery backups before discarding changes.
   --only NAMES         For create, include exactly these comma-separated child repositories.
   --except NAMES       For create, exclude these comma-separated child repositories.
+  --message SUBJECT    Required for a fresh merge, including --dry-run.
   -h, --help           Show this help.
 
 Change selection:
@@ -60,7 +62,8 @@ Examples:
   vcm check
   vcm prune --dry-run
   vcm prune
-  vcm merge --dry-run
+  vcm refresh 260910120000-improve-search
+  vcm merge --dry-run --message 'feat: improve search'
   vcm drop 260910120000-improve-search --force
 
 Notes:
@@ -85,7 +88,7 @@ func run(args []string) error {
 	flags := flag.NewFlagSet("vcm", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	flags.Usage = func() {}
-	workspace, only, except := "", "", ""
+	workspace, only, except, message := "", "", "", ""
 	jsonOutput, dry, force := false, false, false
 	flags.StringVar(&workspace, "workspace", "", "workspace root")
 	flags.BoolVar(&jsonOutput, "json", false, "machine-readable output")
@@ -93,13 +96,14 @@ func run(args []string) error {
 	flags.BoolVar(&force, "force", false, "preserve recovery backups and discard changes")
 	flags.StringVar(&only, "only", "", "selected child repositories")
 	flags.StringVar(&except, "except", "", "excluded child repositories")
+	flags.StringVar(&message, "message", "", "merge commit subject")
 	// Permit global options before or after the command using the standard flag parser.
 	options := []string{}
 	positionals := []string{}
 	for i := 0; i < len(args); i++ {
 		if strings.HasPrefix(args[i], "-") {
 			options = append(options, args[i])
-			if args[i] == "--workspace" || args[i] == "-workspace" || args[i] == "--only" || args[i] == "-only" || args[i] == "--except" || args[i] == "-except" {
+			if args[i] == "--workspace" || args[i] == "-workspace" || args[i] == "--only" || args[i] == "-only" || args[i] == "--except" || args[i] == "-except" || args[i] == "--message" || args[i] == "-message" {
 				i++
 				if i == len(args) {
 					return fmt.Errorf("%s requires a value", options[len(options)-1])
@@ -131,7 +135,7 @@ func run(args []string) error {
 	if len(positionals) > 2 {
 		return fmt.Errorf("too many arguments")
 	}
-	if command != "create" && command != "merge" && command != "drop" && command != "status" && len(positionals) > 1 {
+	if command != "create" && command != "refresh" && command != "merge" && command != "drop" && command != "status" && len(positionals) > 1 {
 		return fmt.Errorf("%s takes no arguments", command)
 	}
 	if force && command != "sync" && command != "drop" {
@@ -145,13 +149,16 @@ func run(args []string) error {
 	if selectionFlags["only"] && selectionFlags["except"] {
 		return fmt.Errorf("--only and --except are mutually exclusive")
 	}
+	if selectionFlags["message"] && command != "merge" {
+		return fmt.Errorf("--message is only supported by merge")
+	}
 	if selectionFlags["only"] && only == "" {
 		return fmt.Errorf("--only contains a blank repository name")
 	}
 	if selectionFlags["except"] && except == "" {
 		return fmt.Errorf("--except contains a blank repository name")
 	}
-	if dry && command != "bootstrap" && command != "sync" && command != "create" && command != "merge" && command != "drop" && command != "prune" {
+	if dry && command != "bootstrap" && command != "sync" && command != "create" && command != "refresh" && command != "merge" && command != "drop" && command != "prune" {
 		return fmt.Errorf("--dry-run is only supported by bootstrap, sync, create, merge, drop, and prune")
 	}
 	if command == "version" {
@@ -223,12 +230,25 @@ func run(args []string) error {
 		if err == nil {
 			result = report
 		}
-	case "bootstrap", "sync", "create", "merge", "drop":
+	case "bootstrap", "sync", "create", "refresh", "merge", "drop":
 		var m *vcm.Manifest
-		if command == "merge" || command == "drop" {
+		if command == "refresh" || command == "merge" || command == "drop" {
 			m, err = engine.Select(arg, cwd)
 			if err != nil {
 				return err
+			}
+		}
+		if command == "merge" {
+			if m.MergeMessage == "" && message == "" {
+				return fmt.Errorf("fresh merge requires --message '<conventional subject>'")
+			}
+			if message != "" {
+				if err := vcm.ValidateMergeMessage(message); err != nil {
+					return err
+				}
+			}
+			if m.MergeMessage != "" && message != "" && message != m.MergeMessage {
+				return fmt.Errorf("merge already started with message %q; retries must reuse it", m.MergeMessage)
 			}
 		}
 		if command == "create" && arg == "" {
@@ -245,7 +265,7 @@ func run(args []string) error {
 			return output(newDryRunResult(engine.Plan(command, m)))
 		}
 		err = engine.Mutate(func() error {
-			if command == "merge" || command == "drop" {
+			if command == "refresh" || command == "merge" || command == "drop" {
 				m, err = engine.Select(arg, cwd)
 				if err != nil {
 					return err
@@ -259,8 +279,10 @@ func run(args []string) error {
 			case "create":
 				m, err = engine.CreateSelected(arg, only, except)
 				return err
+			case "refresh":
+				return engine.Refresh(m)
 			case "merge":
-				return engine.Merge(m)
+				return engine.Merge(m, message)
 			case "drop":
 				return engine.Drop(m)
 			}
@@ -274,6 +296,10 @@ func run(args []string) error {
 		case "merge":
 			if m != nil {
 				result = newMergeResult(m)
+			}
+		case "refresh":
+			if m != nil {
+				result = newRefreshResult(m)
 			}
 		case "drop":
 			if m != nil {

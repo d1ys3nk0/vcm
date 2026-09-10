@@ -67,7 +67,7 @@ func TestMergePreservesIgnoredOriginCollisions(t *testing.T) {
 			before := mustGit(t, e.Root, "rev-parse", "HEAD")
 			index := mustGit(t, e.Root, "write-tree")
 			for attempt := 0; attempt < 2; attempt++ {
-				if err = e.Merge(m); err == nil {
+				if err = e.Merge(m, "feat: test change"); err == nil {
 					t.Fatal("merge accepted ignored collision")
 				}
 				data, readErr := os.ReadFile(local)
@@ -86,7 +86,7 @@ func TestMergePreservesIgnoredOriginCollisions(t *testing.T) {
 			if err = os.Rename(local, preserved); err != nil {
 				t.Fatal(err)
 			}
-			if err = e.Merge(m); err != nil {
+			if err = e.Merge(m, "feat: test change"); err != nil {
 				t.Fatalf("retry after preserving collision: %v", err)
 			}
 			data, err := os.ReadFile(filepath.Join(e.Root, tc.incoming))

@@ -434,7 +434,7 @@ func (e *Engine) CreateSelected(slug, only, except string) (*Manifest, error) {
 	if err != nil {
 		return nil, err
 	}
-	m := &Manifest{Version: 1, Tag: tag, Slug: slug, Workspace: path, Origin: e.Root, Config: e.Config, State: "creating", Hooks: map[string]HookState{}}
+	m := &Manifest{Version: 2, Tag: tag, Slug: slug, Workspace: path, Origin: e.Root, Config: e.Config, State: "creating", Hooks: map[string]HookState{}}
 	m.Repositories = append(m.Repositories, RepoState{Repository: Repository{Name: "root", URL: rootURL, Trunk: e.Config.Root.Trunk, Hooks: e.Config.Root.Hooks}, Origin: e.Root, Path: path})
 	for _, r := range selected {
 		m.Repositories = append(m.Repositories, RepoState{Repository: r, Origin: filepath.Join(e.Root, r.Path), Path: filepath.Join(path, r.Path)})
@@ -668,7 +668,11 @@ func (e *Engine) hooksAt(m *Manifest, r *RepoState, phase, directory string, upd
 			cmd = exec.CommandContext(context.Background(), current.Runners.Python, "-c", h.Python)
 		}
 		cmd.Dir = directory
-		cmd.Env = append(os.Environ(), "VCM_CHANGE_TAG="+m.Tag, "VCM_CHANGE_SLUG="+m.Slug, "VCM_ROOT="+m.Workspace, "VCM_ROOT_ORIGIN="+m.Origin, "VCM_REPOSITORY_NAME="+r.Repository.Name, "VCM_REPOSITORY_ORIGIN="+r.Origin, "VCM_REPOSITORY_PATH="+r.Path, "VCM_HOOK_PHASE="+phase, "VCM_HOOK_ID="+h.ID)
+		selected := make([]string, 0, len(m.Repositories))
+		for _, repository := range m.Repositories {
+			selected = append(selected, repository.Repository.Name)
+		}
+		cmd.Env = append(os.Environ(), "VCM_CHANGE_TAG="+m.Tag, "VCM_CHANGE_SLUG="+m.Slug, "VCM_ROOT="+m.Workspace, "VCM_ROOT_ORIGIN="+m.Origin, "VCM_SELECTED_REPOSITORIES="+strings.Join(selected, ","), "VCM_REPOSITORY_NAME="+r.Repository.Name, "VCM_REPOSITORY_ORIGIN="+r.Origin, "VCM_REPOSITORY_PATH="+r.Path, "VCM_HOOK_PHASE="+phase, "VCM_HOOK_ID="+h.ID)
 		cmd.Stdout = e.Out
 		cmd.Stderr = e.Out
 		err := cmd.Run()
@@ -756,7 +760,11 @@ func (e *Engine) Status(m *Manifest) StatusReport {
 		target, err := head(r.Origin)
 		if err == nil {
 			state.Target = target
-			state.TargetChanged = r.Merged && target != r.Target
+			expected := r.Base
+			if r.Merged {
+				expected = r.Target
+			}
+			state.TargetChanged = expected != "" && target != expected
 		}
 		repos = append(repos, state)
 	}

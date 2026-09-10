@@ -181,6 +181,25 @@ func TestDryRunHumanOutputShowsForceOnlyWhenApplicable(t *testing.T) {
 	}
 }
 
+func TestRefreshPresentationReportsInvalidVerification(t *testing.T) {
+	m := &vcm.Manifest{Tag: "260910120000-refresh", State: "ready", Repositories: []vcm.RepoState{{Repository: vcm.Repository{Name: "root"}, Base: strings.Repeat("a", 40), Source: strings.Repeat("b", 40)}}}
+	result := newRefreshResult(m)
+	if !result.VerificationInvalid || len(result.Repositories) != len(m.Repositories) {
+		t.Fatalf("invalid refresh result: %+v", result)
+	}
+	human := renderHumanForTest(t, result)
+	if !strings.Contains(human, "rerun $sdlc-verify") {
+		t.Fatalf("missing verification guidance: %s", human)
+	}
+	var encoded bytes.Buffer
+	if err := renderJSON(&encoded, result); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(encoded.String(), `"verification_invalid":true`) {
+		t.Fatalf("missing JSON invalidation: %s", encoded.String())
+	}
+}
+
 func TestStructuredErrorOutputAndJSONFlagSelection(t *testing.T) {
 	var output bytes.Buffer
 	writeError(&output, true, errors.New("bad input"))

@@ -66,7 +66,7 @@ func TestManifestRoundTripAndStrictDecoding(t *testing.T) {
 	if err := json.Unmarshal(raw, &persisted); err != nil {
 		t.Fatal(err)
 	}
-	if persisted["version"] != float64(1) {
+	if persisted["version"] != float64(2) {
 		t.Fatalf("state version = %v, want 1", persisted["version"])
 	}
 	for _, field := range []string{"tag", "slug", "workspace", "origin", "config"} {
@@ -111,7 +111,7 @@ func TestManifestRoundTripAndStrictDecoding(t *testing.T) {
 		"invalid version": func(b []byte) []byte {
 			var data map[string]any
 			_ = json.Unmarshal(b, &data)
-			data["version"] = float64(2)
+			data["version"] = float64(3)
 			b, _ = json.Marshal(data)
 			return b
 		},
@@ -158,6 +158,43 @@ func TestManifestDoesNotPersistConfiguration(t *testing.T) {
 	}
 	if len(loaded.Config.Root.Hooks[HookCreateAfter]) != 1 {
 		t.Fatal("manifest did not hydrate current hooks")
+	}
+}
+
+func TestVersionOneStateUpgradesOnMutation(t *testing.T) {
+	s, m := safetyFixture(t)
+	if err := s.save(m); err != nil {
+		t.Fatal(err)
+	}
+	filename := filepath.Join(s.dir, m.Tag+".json")
+	b, err := os.ReadFile(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var data map[string]any
+	if err = json.Unmarshal(b, &data); err != nil {
+		t.Fatal(err)
+	}
+	data["version"] = float64(1)
+	delete(data, "merge_message")
+	b, _ = json.Marshal(data)
+	if err = os.WriteFile(filename, b, 0600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := s.load(m.Tag)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Version != 2 {
+		t.Fatalf("hydrated version = %d", loaded.Version)
+	}
+	if err = s.save(loaded); err != nil {
+		t.Fatal(err)
+	}
+	b, _ = os.ReadFile(filename)
+	_ = json.Unmarshal(b, &data)
+	if data["version"] != float64(2) {
+		t.Fatalf("written version = %v", data["version"])
 	}
 }
 

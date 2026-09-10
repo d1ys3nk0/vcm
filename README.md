@@ -46,7 +46,7 @@ vcm list
 
 The root and child trunks need configured `origin` remotes. Before creation, publish the initial configuration through your normal Git workflow so synchronization can rebase onto its remote trunk. Ignore each configured child checkout path in the root repository.
 
-Make and commit changes in the returned sibling root and its child worktrees. Use `vcm status` within the Change root, then explicitly run `vcm merge` when ready to integrate into local trunks. Merge does not fetch, pull, or push; it removes the managed worktrees after successful local integration and completes post-cleanup finalization from the base repositories. Run `vcm drop` to discard an unneeded Change without integration; inspect `--dry-run` before forced removal.
+Make and commit changes in the returned sibling root and its child worktrees. Use `vcm status` within the Change root. If local trunks advanced, run `vcm refresh` and repeat verification. Then explicitly run `vcm merge --message '<conventional subject>'` when ready to integrate into local trunks. Merge does not fetch, pull, or push; it removes the managed worktrees after successful local integration and completes post-cleanup finalization from the base repositories. Run `vcm drop` to discard an unneeded Change without integration; inspect `--dry-run` before forced removal.
 
 ## Commands
 
@@ -59,7 +59,8 @@ Make and commit changes in the returned sibling root and its child worktrees. Us
 | `create <slug> [--only names] [--except names]` | Synchronize origins and create a full or partial Change |
 | `list` | List recorded Changes |
 | `status [change]` | Inspect lifecycle, hooks, merge, and recovery state |
-| `merge [change]` | Run hooks and squash-merge child repositories, then root |
+| `refresh [change]` | Merge advanced canonical local trunks into the Change without fetching |
+| `merge [change] --message SUBJECT` | Gate all repositories, then create one squash commit per changed repository |
 | `drop [change] [--force]` | Remove owned Change resources |
 | `prune [--dry-run]` | Interactively clean retained checkouts and remove unexpected worktrees and branches |
 | `version` | Show version and source commit |
@@ -77,7 +78,7 @@ For example, `vcm list` prints Changes newest first and marks the Change contain
 @  260910120000-improve-search  ready  0/2 merged  2h   /work/product.260910120000-improve-search
 ```
 
-JSON output is command-specific and does not expose the persisted state. Timestamps use RFC 3339 UTC and Git revisions remain unabbreviated. State version 1 records only lifecycle and recovery checkpoints keyed by the repositories selected for the Change. Configuration and derived identities are resolved from the current `vcm.yml` and state filename instead of being copied into state. The `vcm.yml` format is also version 1.
+JSON output is command-specific and does not expose the persisted state. Timestamps use RFC 3339 UTC and Git revisions remain unabbreviated. State version 2 records lifecycle, refresh and merge recovery checkpoints, and the persisted merge subject, keyed by repositories selected for the Change. Version 1 state is read compatibly and upgraded on mutation. Configuration and derived identities are resolved from the current `vcm.yml` and state filename instead of being copied into state. The `vcm.yml` format is also version 1.
 
 | Result | JSON shape |
 | --- | --- |

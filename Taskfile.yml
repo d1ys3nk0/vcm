@@ -17,7 +17,7 @@ tasks:
   build:
     desc: Build the VCM binary
     cmds:
-      - go build -o bin/vcm ./cmd/vcm
+      - sh -c 'revision=$(git rev-parse HEAD); test -z "$(git status --porcelain --untracked-files=all)" || revision="$revision-dirty"; go build -trimpath -ldflags "-X main.commit=$revision" -o bin/vcm ./cmd/vcm'
 
   release:
     desc: Build release archives

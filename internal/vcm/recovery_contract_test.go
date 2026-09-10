@@ -49,7 +49,7 @@ func TestRecoveryContractHookOrder(t *testing.T) {
 	for _, r := range m.Repositories {
 		commitFile(t, r.Path, "feature.txt", "reviewed content\n")
 	}
-	if err := e.Merge(m); err != nil {
+	if err := e.Merge(m, "feat: test change"); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(log)
@@ -129,7 +129,7 @@ func TestRecoveryContractHookGeneratedCommitsReachExpectedBaseline(t *testing.T)
 	if _, err = os.Stat(filepath.Join(m.Repositories[1].Path, "child-created.txt")); err != nil {
 		t.Fatal("child create-before output missing from Change worktree:", err)
 	}
-	if err = e.Merge(m); err != nil {
+	if err = e.Merge(m, "feat: test change"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = os.Stat(filepath.Join(e.Root, "root-archived.txt")); err != nil {
@@ -152,7 +152,7 @@ func TestRecoveryContractPendingSourceDrift(t *testing.T) {
 		commitFile(t, r.Path, "feature.txt", "reviewed\n")
 	}
 	before := mustGit(t, m.Repositories[1].Origin, "rev-parse", "HEAD")
-	if err := e.Merge(m); err == nil {
+	if err := e.Merge(m, "feat: test change"); err == nil {
 		t.Fatal("expected merge hook failure")
 	}
 	changed := m.Repositories[2]
@@ -162,7 +162,7 @@ func TestRecoveryContractPendingSourceDrift(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := e.Merge(m); err == nil {
+	if err := e.Merge(m, "feat: test change"); err == nil {
 		t.Fatal("accepted source changed after completed review gate")
 	}
 	if got := mustGit(t, m.Repositories[1].Origin, "rev-parse", "HEAD"); got != before {
@@ -216,6 +216,10 @@ func TestRecoveryContractRootRefCompletedWithNestedCheckouts(t *testing.T) {
 	for _, r := range m.Repositories {
 		commitFile(t, r.Path, "feature.txt", "committed source\n")
 	}
+	for i := range m.Repositories {
+		m.Repositories[i].Source = mustGit(t, m.Repositories[i].Path, "rev-parse", "HEAD")
+	}
+	m.MergeMessage = "feat: test change"
 	m.State = "merging"
 	for i := 1; i < len(m.Repositories); i++ {
 		if err := e.mergeOne(m, &m.Repositories[i]); err != nil {
@@ -238,7 +242,7 @@ func TestRecoveryContractRootRefCompletedWithNestedCheckouts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := e.Merge(m); err != nil {
+	if err := e.Merge(m, "feat: test change"); err != nil {
 		t.Fatal(err)
 	}
 	if got := mustGit(t, e.Root, "rev-parse", "HEAD"); got != expected {
