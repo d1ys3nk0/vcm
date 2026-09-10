@@ -24,7 +24,7 @@ func safetyFixture(t *testing.T) (store, *Manifest) {
 	s := store{filepath.Join(common, "vcm")}
 	config := Config{Version: 1, Root: Root{Trunk: "main"}, Children: []Repository{{Name: "api", Path: "repos/api", URL: "https://example.invalid/api.git", Trunk: "main"}}}
 	tag := newTag("safety")
-	change := filepath.Join(filepath.Dir(root), filepath.Base(root)+"-"+tag)
+	change := changeWorkspace(root, tag)
 	m := &Manifest{Version: 1, Tag: tag, Slug: "safety", Workspace: change, Origin: root, Config: config, State: "creating", Hooks: map[string]HookState{}}
 	m.Repositories = []RepoState{{Repository: Repository{Name: "root", URL: "https://example.invalid/root.git", Trunk: "main"}, Origin: root, Path: change}, {Repository: config.Children[0], Origin: filepath.Join(root, "repos/api"), Path: filepath.Join(change, "repos/api")}}
 	return s, m

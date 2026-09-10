@@ -266,7 +266,7 @@ func (e *Engine) Create(slug string) (*Manifest, error) {
 		}
 	}
 	tag := newTag(slug)
-	path := filepath.Join(filepath.Dir(e.Root), filepath.Base(e.Root)+"-"+tag)
+	path := changeWorkspace(e.Root, tag)
 	rootURL, err := git(e.Root, "remote", "get-url", "origin")
 	if err != nil {
 		return nil, err
@@ -333,7 +333,7 @@ func (e *Engine) owned(m *Manifest, r *RepoState) error {
 	if r.Repository.Name != "root" {
 		expected = filepath.Join(m.Workspace, r.Repository.Path)
 	}
-	if r.Path != expected || m.Workspace != filepath.Join(filepath.Dir(e.Root), filepath.Base(e.Root)+"-"+m.Tag) || r.Origin != filepath.Join(e.Root, r.Repository.Path) {
+	if r.Path != expected || m.Workspace != changeWorkspace(e.Root, m.Tag) || r.Origin != filepath.Join(e.Root, r.Repository.Path) {
 		return fmt.Errorf("repository %s: ownership paths mismatch", r.Repository.Name)
 	}
 	actual, err := filepath.EvalSymlinks(r.Path)
@@ -516,7 +516,7 @@ func (e *Engine) CreatePlan(slug string) (map[string]any, error) {
 		return nil, fmt.Errorf("slug must use lowercase kebab-case with digits")
 	}
 	tag := newTag(slug)
-	path := filepath.Join(filepath.Dir(e.Root), filepath.Base(e.Root)+"-"+tag)
+	path := changeWorkspace(e.Root, tag)
 	resources := []string{path}
 	ordered, _ := e.Config.Order()
 	for _, r := range ordered {

@@ -91,7 +91,7 @@ func (s store) validate(m *Manifest) error {
 	if filepath.Base(common) != ".git" || filepath.Dir(common) != m.Origin {
 		return fmt.Errorf("manifest origin must be the primary workspace checkout")
 	}
-	wantWorkspace := filepath.Join(filepath.Dir(m.Origin), filepath.Base(m.Origin)+"-"+m.Tag)
+	wantWorkspace := changeWorkspace(m.Origin, m.Tag)
 	if m.Workspace != wantWorkspace {
 		return fmt.Errorf("manifest workspace path does not match its identity")
 	}
@@ -337,3 +337,7 @@ func (s store) lock() (func(), error) {
 	return func() { syscall.Flock(int(f.Fd()), syscall.LOCK_UN); f.Close() }, nil
 }
 func newTag(slug string) string { return time.Now().UTC().Format("060102150405") + "-" + slug }
+
+func changeWorkspace(origin, tag string) string {
+	return filepath.Join(filepath.Dir(origin), filepath.Base(origin)+"."+tag)
+}

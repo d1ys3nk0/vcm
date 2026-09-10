@@ -105,6 +105,10 @@ func TestCreateMergeLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	wantWorkspace := filepath.Join(filepath.Dir(e.Root), filepath.Base(e.Root)+"."+m.Tag)
+	if m.Workspace != wantWorkspace {
+		t.Fatalf("workspace = %q, want %q", m.Workspace, wantWorkspace)
+	}
 	for i := 1; i < len(m.Repositories); i++ {
 		commitFile(t, m.Repositories[i].Path, "feature.txt", "feature\n")
 	}
