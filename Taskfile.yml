@@ -1,6 +1,33 @@
 version: '3'
 
 tasks:
+  setup:
+    desc: Install repository Git hooks
+    cmds:
+      - lefthook install
+
+  reset:
+    desc: Uninstall repository Git hooks
+    cmds:
+      - lefthook uninstall
+
+  build:
+    desc: Build the VCM binary
+    cmds:
+      - go build -o bin/vcm ./cmd/vcm
+
+  release:
+    desc: Build release archives
+    requires:
+      vars: [VERSION]
+    cmds:
+      - sh scripts/build-release.sh "{{.VERSION}}"
+
+  fix:format:
+    desc: Format repository files
+    cmds:
+      - gofmt -w {{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}$(rg --files -g '*.go'){{end}}
+
   verify:
     desc: Run all local verification checks
     cmds:
@@ -11,7 +38,24 @@ tasks:
   verify:lint:
     desc: Run check-only linting against all files
     cmds:
-      - lefthook run pre-commit --all-files --no-auto-install
+      - task: verify:lint:gofmt
+      - task: verify:lint:go-vet
+      - task: verify:lint:shell-syntax
+
+  verify:lint:gofmt:
+    desc: Verify Go formatting
+    cmds:
+      - test -z "$(gofmt -l {{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}$(rg --files -g '*.go'){{end}})"
+
+  verify:lint:go-vet:
+    desc: Run Go static analysis
+    cmds:
+      - go vet ./...
+
+  verify:lint:shell-syntax:
+    desc: Verify POSIX shell syntax
+    cmds:
+      - sh -c 'for script do sh -n "$script" || exit; done' -- {{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}$(rg --files -g '*.sh'){{end}}
 
   verify:test:
     desc: Run unit, race, and installer tests
@@ -23,20 +67,3 @@ tasks:
     desc: Run the pinned vulnerability scanner
     cmds:
       - go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
-
-  build:
-    desc: Build the VCM binary
-    cmds:
-      - go build -o bin/vcm ./cmd/vcm
-
-  format:
-    desc: Format repository files
-    cmds:
-      - lefthook run format --all-files --no-auto-install
-
-  release:
-    desc: Build release archives
-    requires:
-      vars: [VERSION]
-    cmds:
-      - sh scripts/build-release.sh "{{.VERSION}}"
