@@ -92,17 +92,33 @@ func (e *Engine) Select(selector, cwd string) (*Manifest, error) {
 	if err != nil {
 		return nil, err
 	}
+	implicit := selector == ""
 	if selector == "" {
 		selector = cwd
 	}
-	abs, _ := filepath.Abs(selector)
+	abs, err := filepath.Abs(selector)
+	if err != nil {
+		return nil, err
+	}
+	abs = filepath.Clean(abs)
+	if resolved, resolveErr := filepath.EvalSymlinks(abs); resolveErr == nil {
+		abs = resolved
+	}
 	for _, m := range all {
-		if selector == m.Tag || abs == m.Workspace || strings.HasPrefix(abs, m.Workspace+string(filepath.Separator)) {
+		workspace := filepath.Clean(m.Workspace)
+		if resolved, resolveErr := filepath.EvalSymlinks(workspace); resolveErr == nil {
+			workspace = resolved
+		}
+		withinWorkspace := abs == workspace || strings.HasPrefix(abs, workspace+string(filepath.Separator))
+		if selector == m.Tag || withinWorkspace {
 			if m.Origin != e.Root {
 				return nil, fmt.Errorf("manifest workspace ownership mismatch")
 			}
 			return m, nil
 		}
+	}
+	if implicit {
+		return nil, fmt.Errorf("Change argument is required outside a managed Change worktree")
 	}
 	return nil, fmt.Errorf("no managed Change matches %q; specify a Change tag or workspace path", selector)
 }

@@ -40,7 +40,7 @@ Global options:
                        directory for vcm.yml at a Git root.
   --json               Emit machine-readable JSON to stdout.
   --dry-run            Show the operation plan without changing files or running hooks.
-                       Supported by bootstrap, sync, create, merge, drop, and prune.
+                       Supported by bootstrap, sync, create, refresh, merge, drop, and prune.
   --force              For sync, reset divergent child trunks after creating recovery backups.
                        For drop, preserve recovery backups before discarding changes.
   --only NAMES         For create, include exactly these comma-separated child repositories.
@@ -50,7 +50,8 @@ Global options:
 
 Change selection:
   The optional [change] is a managed Change tag or its root workspace path. If it is
-  omitted, run status, merge, or drop from inside that Change's root workspace.
+  omitted, status, refresh, merge, and drop infer the Change when run anywhere inside
+  its managed worktree. Outside a managed Change worktree, [change] is required.
 
 Examples:
   vcm validate

@@ -99,6 +99,51 @@ func TestBootstrapAndDiscovery(t *testing.T) {
 		t.Fatal("accepted wrong remote")
 	}
 }
+
+func TestSelectInfersChangeFromManagedWorktree(t *testing.T) {
+	e := fixture(t, 1)
+	m, err := e.Create("selection-context")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootNested := filepath.Join(m.Workspace, "nested")
+	childNested := filepath.Join(m.Repositories[1].Path, "nested")
+	for _, path := range []string{rootNested, childNested} {
+		if err := os.MkdirAll(path, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for name, selection := range map[string]struct {
+		selector string
+		cwd      string
+	}{
+		"tag":              {selector: m.Tag, cwd: e.Root},
+		"workspace path":   {selector: m.Workspace, cwd: e.Root},
+		"root":             {cwd: m.Workspace},
+		"root descendant":  {cwd: rootNested},
+		"child":            {cwd: m.Repositories[1].Path},
+		"child descendant": {cwd: childNested},
+	} {
+		t.Run(name, func(t *testing.T) {
+			selected, err := e.Select(selection.selector, selection.cwd)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if selected.Tag != m.Tag {
+				t.Fatalf("selected %q, want %q", selected.Tag, m.Tag)
+			}
+		})
+	}
+
+	if _, err := e.Select("", e.Root); err == nil || err.Error() != "Change argument is required outside a managed Change worktree" {
+		t.Fatalf("unexpected omitted-selection error: %v", err)
+	}
+	if _, err := e.Select("missing-change", e.Root); err == nil || !strings.Contains(err.Error(), `no managed Change matches "missing-change"`) {
+		t.Fatalf("unexpected explicit-selection error: %v", err)
+	}
+}
+
 func TestCreateMergeLifecycle(t *testing.T) {
 	e := fixture(t, 2)
 	m, err := e.Create("feature-1")

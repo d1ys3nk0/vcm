@@ -153,6 +153,33 @@ func cliCleanWorkspace(t *testing.T) string {
 	return canonical
 }
 
+func cliManagedChange(t *testing.T) (string, *vcm.Manifest) {
+	t.Helper()
+	root := cliCleanWorkspace(t)
+	remote := filepath.Join(filepath.Dir(root), "workspace.git")
+	if out, err := exec.Command("git", "init", "--bare", "--initial-branch=main", remote).CombinedOutput(); err != nil {
+		t.Fatalf("git init remote: %s %v", out, err)
+	}
+	for _, args := range [][]string{{"-C", root, "remote", "add", "origin", remote}, {"-C", root, "push", "origin", "main"}} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %s %v", args, out, err)
+		}
+	}
+	engine, err := vcm.Open(root, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest *vcm.Manifest
+	if err := engine.Mutate(func() error {
+		var createErr error
+		manifest, createErr = engine.Create("context-selection")
+		return createErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return root, manifest
+}
+
 func TestVersionReportsBuildMetadata(t *testing.T) {
 	oldVersion, oldCommit := version, commit
 	version, commit = "test-release", "test-source"
@@ -179,8 +206,9 @@ func TestHelpDocumentsEveryCommandAndOption(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, phrase := range []string{
-		"validate", "bootstrap", "sync", "create <slug>", "list", "status [change]", "merge [change]", "drop [change]", "version",
+		"validate", "bootstrap", "sync", "create <slug>", "list", "status [change]", "refresh [change]", "merge [change]", "drop [change]", "version",
 		"--workspace PATH", "--json", "--dry-run", "--force", "--only NAMES", "--except NAMES", "Change selection:", "Examples:",
+		"anywhere inside", "Outside a managed Change worktree, [change] is required",
 	} {
 		if !strings.Contains(output, phrase) {
 			t.Errorf("help is missing %q:\n%s", phrase, output)
@@ -303,11 +331,92 @@ func TestJSONResultRemainsOnStdoutWhileProgressUsesStderr(t *testing.T) {
 
 func TestStatusRequiresManagedSelection(t *testing.T) {
 	root := cliWorkspace(t)
-	if _, err := runOutput(t, "status", "--workspace", root); err == nil {
-		t.Fatal("status accepted unmanaged current directory")
+	if _, err := runOutput(t, "status", "--workspace", root); err == nil || err.Error() != "Change argument is required outside a managed Change worktree" {
+		t.Fatalf("unexpected omitted-selection error: %v", err)
 	}
 	if _, err := runOutput(t, "status", "missing-change", "--workspace", root); err == nil {
 		t.Fatal("status accepted unknown Change")
+	}
+}
+
+func TestChangeCommandsUseContextAwareSelection(t *testing.T) {
+	root, manifest := cliManagedChange(t)
+	nested := filepath.Join(manifest.Workspace, "nested", "deeper")
+	if err := os.MkdirAll(nested, 0755); err != nil {
+		t.Fatal(err)
+	}
+	originalCWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(originalCWD); err != nil {
+			t.Errorf("restore working directory: %v", err)
+		}
+	})
+
+	commands := []struct {
+		name string
+		args []string
+	}{
+		{name: "status", args: []string{"status", "--json"}},
+		{name: "refresh", args: []string{"refresh", "--dry-run", "--json"}},
+		{name: "merge", args: []string{"merge", "--dry-run", "--message", "feat: select contextual change", "--json"}},
+		{name: "drop", args: []string{"drop", "--dry-run", "--json"}},
+	}
+	type selectedResult struct {
+		Tag string `json:"tag"`
+	}
+	assertSelected := func(t *testing.T, command []string, selector string, workspaceOverride bool) {
+		t.Helper()
+		args := append([]string{}, command...)
+		if selector != "" {
+			args = append(args, selector)
+		}
+		if workspaceOverride {
+			args = append(args, "--workspace", root)
+		}
+		result, err := runJSON[selectedResult](t, args...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Tag != manifest.Tag {
+			t.Fatalf("selected %q, want %q", result.Tag, manifest.Tag)
+		}
+	}
+
+	for _, cwd := range []string{manifest.Workspace, nested} {
+		if err := os.Chdir(cwd); err != nil {
+			t.Fatal(err)
+		}
+		for _, command := range commands {
+			t.Run(command.name+"/implicit/"+filepath.Base(cwd), func(t *testing.T) {
+				assertSelected(t, command.args, "", false)
+			})
+		}
+	}
+
+	if err := os.Chdir(root); err != nil {
+		t.Fatal(err)
+	}
+	for _, command := range commands {
+		t.Run(command.name+"/outside", func(t *testing.T) {
+			args := append(append([]string{}, command.args...), "--workspace", root)
+			if _, err := runOutput(t, args...); err == nil || err.Error() != "Change argument is required outside a managed Change worktree" {
+				t.Fatalf("unexpected omitted-selection error: %v", err)
+			}
+		})
+		for _, selector := range []string{manifest.Tag, manifest.Workspace} {
+			t.Run(command.name+"/explicit/"+filepath.Base(selector), func(t *testing.T) {
+				assertSelected(t, command.args, selector, true)
+			})
+		}
+		t.Run(command.name+"/unknown", func(t *testing.T) {
+			args := append(append([]string{}, command.args...), "missing-change", "--workspace", root)
+			if _, err := runOutput(t, args...); err == nil || !strings.Contains(err.Error(), `no managed Change matches "missing-change"`) {
+				t.Fatalf("unexpected explicit-selection error: %v", err)
+			}
+		})
 	}
 }
 
