@@ -129,6 +129,35 @@ func TestCreateMergeLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestCreatePreflightsAllRepositoriesBeforeCreatingWorktrees(t *testing.T) {
+	e := fixture(t, 2)
+	dirty := filepath.Join(e.Root, "repo1")
+	put(t, filepath.Join(dirty, "uncommitted.txt"), "preserve me\n")
+
+	origins := []string{e.Root, filepath.Join(e.Root, "repo0"), dirty}
+	worktreesBefore := make([]string, len(origins))
+	for i, origin := range origins {
+		worktreesBefore[i] = mustGit(t, origin, "worktree", "list", "--porcelain")
+	}
+
+	if _, err := e.Create("preflight"); err == nil || !strings.Contains(err.Error(), "dirty checkout "+dirty) {
+		t.Fatalf("expected dirty repository rejection: %v", err)
+	}
+	for i, origin := range origins {
+		if after := mustGit(t, origin, "worktree", "list", "--porcelain"); after != worktreesBefore[i] {
+			t.Fatalf("repository %s gained a worktree before preflight completed", origin)
+		}
+	}
+	all, err := e.All()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 0 {
+		t.Fatalf("create recorded state before preflight completed: %d manifests", len(all))
+	}
+}
+
 func TestConflictPreflightDoesNotPartiallyMerge(t *testing.T) {
 	e := fixture(t, 2)
 	m, err := e.Create("conflict")

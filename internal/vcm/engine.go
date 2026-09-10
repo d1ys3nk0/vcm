@@ -265,14 +265,8 @@ func (e *Engine) Create(slug string) (*Manifest, error) {
 			return nil, fmt.Errorf("active Change already exists: %s", m.Tag)
 		}
 	}
-	if err = clean(e.Root); err != nil {
-		return nil, err
-	}
 	tag := newTag(slug)
 	path := filepath.Join(filepath.Dir(e.Root), filepath.Base(e.Root)+"-"+tag)
-	if _, err = os.Lstat(path); !os.IsNotExist(err) {
-		return nil, fmt.Errorf("Change path collision: %s", path)
-	}
 	rootURL, err := git(e.Root, "remote", "get-url", "origin")
 	if err != nil {
 		return nil, err
@@ -283,11 +277,57 @@ func (e *Engine) Create(slug string) (*Manifest, error) {
 	for _, r := range ordered {
 		m.Repositories = append(m.Repositories, RepoState{Repository: r, Origin: filepath.Join(e.Root, r.Path), Path: filepath.Join(path, r.Path)})
 	}
+	if err = e.prepareCreate(m); err != nil {
+		return nil, err
+	}
 	if err = e.store.save(m); err != nil {
 		return nil, err
 	}
 	return m, e.resumeCreate(m)
 }
+
+func (e *Engine) prepareCreate(m *Manifest) error {
+	for i := range m.Repositories {
+		r := &m.Repositories[i]
+		if err := validateOrigin(r.Origin, r.Repository); err != nil {
+			return err
+		}
+		if err := e.reconcileSync(r.Repository, r.Origin); err != nil {
+			return err
+		}
+		if err := clean(r.Origin); err != nil {
+			return err
+		}
+		if _, err := os.Lstat(r.Path); !os.IsNotExist(err) {
+			if i == 0 {
+				return fmt.Errorf("Change path collision: %s", r.Path)
+			}
+			return fmt.Errorf("repository %s: existing unowned path %s", r.Repository.Name, r.Path)
+		}
+		if _, err := git(r.Origin, "show-ref", "--verify", "refs/heads/"+m.Tag); err == nil {
+			return fmt.Errorf("repository %s: branch collision %s", r.Repository.Name, m.Tag)
+		}
+	}
+	for i := range m.Repositories {
+		r := &m.Repositories[i]
+		base, err := e.syncOne(r.Repository, true)
+		if err != nil {
+			return err
+		}
+		if i == 0 {
+			current, err := readConfig(e.Root)
+			if err != nil {
+				return err
+			}
+			if !reflect.DeepEqual(current, m.Config) {
+				return fmt.Errorf("root configuration changed during synchronization; retry create")
+			}
+		}
+		r.Base = base
+	}
+	return nil
+}
+
 func (e *Engine) owned(m *Manifest, r *RepoState) error {
 	expected := m.Workspace
 	if r.Repository.Name != "root" {
