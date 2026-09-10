@@ -105,6 +105,16 @@ func TestHelpDocumentsEveryCommandAndOption(t *testing.T) {
 	}
 }
 
+func TestMissingCommandShowsHelp(t *testing.T) {
+	output, err := runErrorOutput(t)
+	if err == nil || err.Error() != "command required" {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(output, "Commands:") || !strings.Contains(output, "create <slug>") {
+		t.Fatalf("missing command did not show help:\n%s", output)
+	}
+}
+
 func TestCommandRejectsUnexpectedArguments(t *testing.T) {
 	for _, args := range [][]string{{"version", "extra"}, {"validate", "extra"}, {"list", "extra"}, {"sync", "extra"}, {"create", "one", "two"}, {"version", "--force"}, {"version", "--unknown"}, {"validate", "--workspace"}} {
 		t.Run(args[0]+"/"+args[len(args)-1], func(t *testing.T) {

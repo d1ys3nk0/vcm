@@ -90,7 +90,8 @@ func run(args []string) error {
 		return err
 	}
 	if len(positionals) == 0 {
-		return fmt.Errorf("command required; use --help")
+		flags.Usage()
+		return fmt.Errorf("command required")
 	}
 	command := positionals[0]
 	output := func(v any) error {
