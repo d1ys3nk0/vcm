@@ -1,6 +1,6 @@
 # Vibe Change Manager
 
-VCM manages a Git workspace root and its child repositories as one Change. It bootstraps repositories, synchronizes trunks, creates isolated worktrees, runs project hooks, squash-merges locally, and records recovery state. Project policy belongs in configured hooks. Git is required; configured hooks additionally require their selected runner.
+VCM manages a Git workspace root and its child repositories as one Change. It bootstraps repositories, synchronizes trunks, creates isolated worktrees, runs project hooks, squash-merges locally, publishes trunks, and records recovery state. Project policy belongs in configured hooks. Git is required; configured hooks additionally require their selected runner.
 
 ## Install
 
@@ -46,7 +46,7 @@ vcm list
 
 The root and child trunks need configured `origin` remotes. Before creation, publish the initial configuration through your normal Git workflow so synchronization can rebase onto its remote trunk. Ignore each configured child checkout path in the root repository.
 
-Make and commit changes in the returned sibling root and its child worktrees. Use `vcm status` within the Change root. If local trunks advanced, run `vcm refresh` and repeat verification. Then explicitly run `vcm merge` when ready to integrate into local trunks. A fresh merge defaults its Conventional Commit subject to `feat: <manifest slug>`; use `--message '<conventional subject>'` to override it. Merge does not fetch, pull, or push; it removes the managed worktrees after successful local integration and completes post-cleanup finalization from the base repositories. Run `vcm drop` to discard an unneeded Change without integration; inspect `--dry-run` before forced removal.
+Make and commit changes in the returned sibling root and its child worktrees. Use `vcm status` within the Change root. If local trunks advanced, run `vcm refresh` and repeat verification. Then explicitly run `vcm merge` when ready to integrate into local trunks. A fresh merge defaults its Conventional Commit subject to `feat: <manifest slug>`; use `--message '<conventional subject>'` to override it. Merge does not fetch, pull, or push; it removes the managed worktrees after successful local integration and completes post-cleanup finalization from the base repositories. Run `vcm push` from the canonical workspace to publish the resulting trunks. Run `vcm drop` to discard an unneeded Change without integration; inspect `--dry-run` before forced removal.
 
 ## Commands
 
@@ -56,6 +56,7 @@ Make and commit changes in the returned sibling root and its child worktrees. Us
 | `check` | Audit repository cleanliness, local worktrees, and local branches |
 | `bootstrap` | Clone missing repositories and validate existing origins |
 | `sync [--force]` | Fast-forward child trunks; force resets with recovery backups |
+| `push [--dry-run]` | Validate every canonical trunk, then publish children in dependency order and the root last |
 | `create <slug> [--only names] [--except names]` | Synchronize origins and create a full or partial Change |
 | `list` | List recorded Changes |
 | `status [change]` | Inspect lifecycle, hooks, merge, and recovery state |
@@ -70,6 +71,8 @@ Make and commit changes in the returned sibling root and its child worktrees. Us
 Merge overrides are invocation-scoped and independent. `-f` or `--force` runs all non-skipped lifecycle hooks but treats a hook command's nonzero exit as a recorded warning only when the hook leaves its checkout clean; later hooks and integration continue. It does not enable forced cleanup or discard content. `--skip-hooks merge-before`, `--skip-hooks merge-after`, or both exact comma-separated phases bypass configured hooks in those phases and log every bypass to stderr without persisting a skipped outcome. Blank, duplicate, whitespace-padded, and unsupported phases are rejected. `--skip-git-hooks` supplies `core.hooksPath=/dev/null` only to Git commands started by merge lifecycle hook subprocesses. Configuration, state, output, checkout cleanliness, ownership, revision, conflict, and incomplete lifecycle failures remain fatal under every override.
 
 `vcm check` allows only each repository's configured local trunk and the tags of its live worktrees recorded as owned and not removed. Remote-tracking branches and VCM recovery refs are outside the audit. Ignored files do not make a retained worktree dirty. Repositories and their findings are reported with the root first, followed by children in `vcm.yml` order; repositories referenced only by stale state follow in name order. Findings are written as a complete human or JSON report followed by a nonzero exit status.
+
+`vcm push` first validates every configured child checkout and the root checkout before publishing any repository. Each checkout must be clean, have no unfinished Git operation, have its configured trunk checked out at the local trunk revision, and use the configured `origin`. VCM fetches each remote trunk and rejects missing, behind, or divergent histories; it never force-pushes or creates a missing remote trunk. After the entire workspace passes preflight, children are pushed in dependency order with explicit trunk refspecs and the root is pushed last. Cross-repository publication is not atomic: a remote race or transport failure can leave earlier repositories published. Fix the failure and rerun `vcm push`; already-current repositories are safe to retry.
 
 Run `vcm prune --dry-run` before pruning. A real prune requires interactive stdin and asks separately before resetting a dirty retained checkout, deleting an unexpected worktree, or deleting an unexpected local branch. Only `y` or `yes` approves an item; declined and failed items do not stop independent actions. Resets use the checkout's current `HEAD`, remove ordinary untracked files, and retain ignored files. Each action phase processes the root first and then children in `vcm.yml` order; resets run before unexpected worktree removals, which run before branch deletions. Prune does not fetch, synchronize, or create recovery backups, and returns nonzero when findings remain.
 
@@ -86,7 +89,7 @@ JSON output is command-specific and does not expose the persisted state. Timesta
 | --- | --- |
 | `validate` | `{valid, workspace}` |
 | `check` | `{clean, workspace, repositories:[{name, origin, clean}], issues:[{repository, kind, path?, branch?, detail}]}` |
-| `bootstrap`, `sync` | `{command, complete, workspace}` |
+| `bootstrap`, `sync`, `push` | `{command, complete, workspace}` |
 | `create` | `{tag, slug, workspace, state, repositories:[{name, path, base}]}` |
 | `list` | `[{tag, slug, workspace, state, created_at, repository_count, merged_count, removed_count}]` |
 | `status` | `{tag, slug, workspace, state, created_at, repositories, hooks, backups, recovery_directory, pending_sync}` |

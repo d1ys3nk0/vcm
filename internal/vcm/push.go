@@ -1,0 +1,99 @@
+package vcm
+
+import (
+	"fmt"
+	"path/filepath"
+)
+
+type pushRepository struct {
+	repository Repository
+	path       string
+	local      string
+}
+
+func (e *Engine) pushRepositories() ([]pushRepository, error) {
+	ordered, err := e.Config.Order()
+	if err != nil {
+		return nil, err
+	}
+	repositories := make([]pushRepository, 0, len(ordered)+1)
+	for _, repository := range ordered {
+		repositories = append(repositories, pushRepository{repository: repository, path: filepath.Join(e.Root, repository.Path)})
+	}
+	rootURL, err := git(e.Root, "remote", "get-url", "origin")
+	if err != nil {
+		return nil, fmt.Errorf("repository root: resolve origin: %w", err)
+	}
+	repositories = append(repositories, pushRepository{
+		repository: Repository{Name: "root", URL: rootURL, Trunk: e.Config.Root.Trunk},
+		path:       e.Root,
+	})
+	return repositories, nil
+}
+
+func (e *Engine) preflightPush(repository *pushRepository) error {
+	r := repository.repository
+	if err := validateOrigin(repository.path, r); err != nil {
+		return fmt.Errorf("repository %s push preflight: %w", r.Name, err)
+	}
+	if err := e.reconcileSync(r, repository.path); err != nil {
+		return fmt.Errorf("repository %s push preflight: %w", r.Name, err)
+	}
+	if err := clean(repository.path); err != nil {
+		return fmt.Errorf("repository %s push preflight: %w", r.Name, err)
+	}
+	currentBranch, err := branch(repository.path)
+	if err != nil {
+		return fmt.Errorf("repository %s push preflight: configured trunk %s is not checked out: %w", r.Name, r.Trunk, err)
+	}
+	if currentBranch != r.Trunk {
+		return fmt.Errorf("repository %s push preflight: checked out branch is %s, expected configured trunk %s", r.Name, currentBranch, r.Trunk)
+	}
+	local, err := git(repository.path, "rev-parse", "refs/heads/"+r.Trunk)
+	if err != nil {
+		return fmt.Errorf("repository %s push preflight: resolve local trunk %s: %w", r.Name, r.Trunk, err)
+	}
+	current, err := head(repository.path)
+	if err != nil {
+		return fmt.Errorf("repository %s push preflight: resolve HEAD: %w", r.Name, err)
+	}
+	if current != local {
+		return fmt.Errorf("repository %s push preflight: HEAD does not match local trunk %s", r.Name, r.Trunk)
+	}
+	if _, err = git(repository.path, "fetch", "--no-tags", "origin", "refs/heads/"+r.Trunk); err != nil {
+		return fmt.Errorf("repository %s push preflight: fetch remote trunk %s: %w", r.Name, r.Trunk, err)
+	}
+	remote, err := git(repository.path, "rev-parse", "FETCH_HEAD")
+	if err != nil {
+		return fmt.Errorf("repository %s push preflight: resolve fetched remote trunk %s: %w", r.Name, r.Trunk, err)
+	}
+	if !ancestor(repository.path, remote, local) {
+		return fmt.Errorf("repository %s push preflight: remote trunk %s is not an ancestor of the local trunk; local trunk is behind or divergent", r.Name, r.Trunk)
+	}
+	repository.local = local
+	e.logOperation("push", r.Name, repository.path, "preflight complete for trunk %s at %s", r.Trunk, abbreviateRevision(local))
+	return nil
+}
+
+// Push validates every canonical checkout before publishing any repository.
+// Children are published in dependency order and the workspace root last.
+func (e *Engine) Push() error {
+	repositories, err := e.pushRepositories()
+	if err != nil {
+		return err
+	}
+	for i := range repositories {
+		if err := e.preflightPush(&repositories[i]); err != nil {
+			return err
+		}
+	}
+	for _, repository := range repositories {
+		r := repository.repository
+		refspec := "refs/heads/" + r.Trunk + ":refs/heads/" + r.Trunk
+		if _, err := git(repository.path, "push", "origin", refspec); err != nil {
+			return fmt.Errorf("repository %s push: %w; earlier repositories may already be published, inspect remotes and retry", r.Name, err)
+		}
+		e.logOperation("push", r.Name, repository.path, "pushed trunk %s at %s", r.Trunk, abbreviateRevision(repository.local))
+	}
+	return nil
+}

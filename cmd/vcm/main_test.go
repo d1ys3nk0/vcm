@@ -206,7 +206,7 @@ func TestHelpDocumentsEveryCommandAndOption(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, phrase := range []string{
-		"validate", "bootstrap", "sync", "create <slug>", "list", "status [change]", "refresh [change]", "merge [change]", "drop [change]", "version",
+		"validate", "bootstrap", "sync", "push                 Validate and publish", "create <slug>", "list", "status [change]", "refresh [change]", "merge [change]", "drop [change]", "version",
 		"--workspace PATH", "--json", "--dry-run", "--force", "--only NAMES", "--except NAMES", "--skip-hooks PHASES", "--skip-git-hooks", "feat: <manifest slug>", "Change selection:", "Examples:",
 		"anywhere inside", "Outside a managed Change worktree, [change] is required",
 	} {
@@ -314,7 +314,7 @@ func TestMissingCommandShowsHelp(t *testing.T) {
 }
 
 func TestCommandRejectsUnexpectedArguments(t *testing.T) {
-	for _, args := range [][]string{{"version", "extra"}, {"validate", "extra"}, {"list", "extra"}, {"sync", "extra"}, {"create", "one", "two"}, {"version", "--force"}, {"version", "--unknown"}, {"validate", "--workspace"}} {
+	for _, args := range [][]string{{"version", "extra"}, {"validate", "extra"}, {"list", "extra"}, {"sync", "extra"}, {"push", "extra"}, {"push", "--force"}, {"push", "--only", "api"}, {"create", "one", "two"}, {"version", "--force"}, {"version", "--unknown"}, {"validate", "--workspace"}} {
 		t.Run(args[0]+"/"+args[len(args)-1], func(t *testing.T) {
 			if _, err := runOutput(t, args...); err == nil {
 				t.Fatal("unexpected arguments accepted")
@@ -338,7 +338,7 @@ func TestWorkspaceOverrideAndFlagsAfterCommand(t *testing.T) {
 
 func TestDryRunCreatesNoResources(t *testing.T) {
 	root := cliWorkspace(t)
-	for _, args := range [][]string{{"bootstrap", "--dry-run", "--json", "--workspace", root}, {"create", "example-change", "--dry-run", "--json", "--workspace", root}, {"sync", "--force", "--dry-run", "--json", "--workspace", root}} {
+	for _, args := range [][]string{{"bootstrap", "--dry-run", "--json", "--workspace", root}, {"create", "example-change", "--dry-run", "--json", "--workspace", root}, {"sync", "--force", "--dry-run", "--json", "--workspace", root}, {"push", "--dry-run", "--json", "--workspace", root}} {
 		result, err := runJSON[dryRunResult](t, args...)
 		if err != nil {
 			t.Fatal(err)
@@ -352,10 +352,61 @@ func TestDryRunCreatesNoResources(t *testing.T) {
 			}
 		}
 	}
+	result, err := runJSON[dryRunResult](t, "push", "--dry-run", "--json", "--workspace", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Resources) != 2 || result.Resources[0] != root || result.Resources[1] != filepath.Join(root, "repos", "api") {
+		t.Fatalf("push dry-run resources: %+v", result.Resources)
+	}
 	for _, path := range []string{filepath.Join(root, "repos"), filepath.Join(root, ".git", "vcm")} {
 		if _, err := os.Lstat(path); !os.IsNotExist(err) {
 			t.Fatalf("dry run created %s", path)
 		}
+	}
+}
+
+func TestCLIPushReportsResultAndProgress(t *testing.T) {
+	root := cliCleanWorkspace(t)
+	remote := filepath.Join(filepath.Dir(root), "workspace.git")
+	if out, err := exec.Command("git", "init", "--bare", "--initial-branch=main", remote).CombinedOutput(); err != nil {
+		t.Fatalf("git init remote: %s %v", out, err)
+	}
+	for _, args := range [][]string{{"-C", root, "remote", "add", "origin", remote}, {"-C", root, "push", "origin", "main"}} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %s %v", args, out, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "published.txt"), []byte("published\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"-C", root, "add", "published.txt"}, {"-C", root, "commit", "-m", "feat: publish workspace"}} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %s %v", args, out, err)
+		}
+	}
+	stdout, stderr, err := runCapturedOutput(t, "push", "--json", "--workspace", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result commandResult
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("invalid JSON stdout %q: %v", stdout, err)
+	}
+	if result.Command != "push" || !result.Complete || result.Workspace != root {
+		t.Fatalf("unexpected push result: %+v", result)
+	}
+	for _, want := range []string{"[push/root @ " + root + "] preflight complete for trunk main", "[push/root @ " + root + "] pushed trunk main"} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("push progress missing %q:\n%s", want, stderr)
+		}
+	}
+	human, err := runOutput(t, "push", "--workspace", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if human != "Push complete.\nWorkspace: "+root+"\n" {
+		t.Fatalf("unexpected human push result: %q", human)
 	}
 }
 

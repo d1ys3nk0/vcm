@@ -26,6 +26,7 @@ Commands:
   check                Audit repository cleanliness, worktrees, and local branches.
   bootstrap            Clone missing configured repositories and verify existing origins.
   sync                 Fast-forward configured workspace and child trunks from origin.
+  push                 Validate and publish child trunks, then the workspace root trunk.
   create <slug>        Synchronize origins and create an isolated Change workspace.
   list                 List recorded Changes.
   status [change]      Show a Change's lifecycle, hooks, merge, and recovery state.
@@ -40,7 +41,7 @@ Global options:
                        directory for vcm.yml at a Git root.
   --json               Emit machine-readable JSON to stdout.
   --dry-run            Show the operation plan without changing files or running hooks.
-                       Supported by bootstrap, sync, create, refresh, merge, drop, and prune.
+                       Supported by bootstrap, sync, push, create, refresh, merge, drop, and prune.
   -f, --force          For merge, ignore clean lifecycle hook command failures. For sync,
                        reset divergent child trunks after creating recovery backups. For drop,
                        preserve recovery backups before discarding changes.
@@ -64,6 +65,8 @@ Examples:
   vcm create improve-search --except devtools
   vcm status 260910120000-improve-search
   vcm check
+  vcm push --dry-run
+  vcm push
   vcm prune --dry-run
   vcm prune
   vcm refresh 260910120000-improve-search
@@ -172,8 +175,8 @@ func run(args []string) error {
 	if selectionFlags["except"] && except == "" {
 		return fmt.Errorf("--except contains a blank repository name")
 	}
-	if dry && command != "bootstrap" && command != "sync" && command != "create" && command != "refresh" && command != "merge" && command != "drop" && command != "prune" {
-		return fmt.Errorf("--dry-run is only supported by bootstrap, sync, create, merge, drop, and prune")
+	if dry && command != "bootstrap" && command != "sync" && command != "push" && command != "create" && command != "refresh" && command != "merge" && command != "drop" && command != "prune" {
+		return fmt.Errorf("--dry-run is only supported by bootstrap, sync, push, create, refresh, merge, drop, and prune")
 	}
 	if command == "version" {
 		return output(versionResult{Version: version, Commit: commit})
@@ -253,7 +256,7 @@ func run(args []string) error {
 		if err == nil {
 			result = report
 		}
-	case "bootstrap", "sync", "create", "refresh", "merge", "drop":
+	case "bootstrap", "sync", "push", "create", "refresh", "merge", "drop":
 		var m *vcm.Manifest
 		if command == "refresh" || command == "merge" || command == "drop" {
 			m, err = engine.Select(arg, cwd)
@@ -296,6 +299,8 @@ func run(args []string) error {
 				return engine.Bootstrap()
 			case "sync":
 				return engine.Sync()
+			case "push":
+				return engine.Push()
 			case "create":
 				m, err = engine.CreateSelected(arg, only, except)
 				return err
