@@ -6,18 +6,42 @@ import (
 	"sync"
 )
 
-func (e *Engine) logOperation(operation, repository, path, format string, args ...any) {
+// LogSemantic classifies the small, explicit tokens that logging may style.
+// Hook payloads and operation details are deliberately never classified.
+type LogSemantic uint8
+
+const (
+	LogContext LogSemantic = iota
+	LogChanged
+	LogWarning
+	LogSuccess
+	LogFailure
+)
+
+func (e *Engine) styleLog(semantic LogSemantic, text string) string {
+	if e.Style == nil {
+		return text
+	}
+	return e.Style(semantic, text)
+}
+
+func (e *Engine) logPrefix(operation, repository, path string) string {
+	return e.styleLog(LogContext, fmt.Sprintf("[%s/%s @ ", operation, repository)) + path + e.styleLog(LogContext, "]")
+}
+
+func (e *Engine) logOperationOutcome(operation, repository, path, leading, outcome string, semantic LogSemantic, trailingFormat string, args ...any) {
 	if e.Out == nil {
 		return
 	}
-	fmt.Fprintf(e.Out, "[%s/%s @ %s] %s\n", operation, repository, path, fmt.Sprintf(format, args...))
+	fmt.Fprintf(e.Out, "%s %s%s%s\n", e.logPrefix(operation, repository, path), leading, e.styleLog(semantic, outcome), fmt.Sprintf(trailingFormat, args...))
 }
 
-func (e *Engine) logHook(repository, phase, id, path, message string) error {
+func (e *Engine) logHook(repository, phase, id, path, status string, semantic LogSemantic, detail string) error {
 	if e.Out == nil {
 		return nil
 	}
-	_, err := fmt.Fprintf(e.Out, "[hook/%s/%s/%s @ %s] %s\n", repository, phase, id, path, message)
+	prefix := e.logPrefix("hook/"+repository+"/"+phase, id, path)
+	_, err := fmt.Fprintf(e.Out, "%s %s%s\n", prefix, e.styleLog(semantic, status), detail)
 	return err
 }
 

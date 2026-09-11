@@ -144,11 +144,18 @@ func (e *Engine) Prune(confirm ConfirmPrune) (PruneReport, error) {
 	report := PruneReport{Workspace: e.Root, Actions: []PruneAction{}}
 	record := func(action PruneAction, path string) {
 		report.Actions = append(report.Actions, action)
-		message := fmt.Sprintf("%s %s", action.Action, action.Status)
-		if action.Action == PruneDeleteBranch {
-			message = fmt.Sprintf("%s %s for %s", action.Action, action.Status, action.Target)
+		semantic := LogWarning
+		switch action.Status {
+		case PruneCompleted:
+			semantic = LogSuccess
+		case PruneFailed:
+			semantic = LogFailure
 		}
-		e.logOperation("prune", action.Repository, path, "%s", message)
+		trailing := ""
+		if action.Action == PruneDeleteBranch {
+			trailing = " for " + action.Target
+		}
+		e.logOperationOutcome("prune", action.Repository, path, action.Action+" ", action.Status, semantic, "%s", trailing)
 	}
 	if inv.Unsafe {
 		report.RemainingIssues = inv.Report.Issues

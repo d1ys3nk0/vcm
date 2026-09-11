@@ -21,6 +21,7 @@ type Engine struct {
 	Config         Config
 	store          store
 	Out            io.Writer
+	Style          func(LogSemantic, string) string
 	Force          bool
 	MergeForce     bool
 	SkipMergeHooks map[string]bool
@@ -155,7 +156,7 @@ func (e *Engine) Bootstrap() error {
 			if err = validateOrigin(path, r); err != nil {
 				return err
 			}
-			e.logOperation("bootstrap", r.Name, path, "validated existing checkout on trunk %s", r.Trunk)
+			e.logOperationOutcome("bootstrap", r.Name, path, "", "validated", LogSuccess, " existing checkout on trunk %s", r.Trunk)
 			continue
 		} else if !os.IsNotExist(err) {
 			return err
@@ -166,7 +167,7 @@ func (e *Engine) Bootstrap() error {
 		if _, err := git(e.Root, "clone", "--branch", r.Trunk, "--", r.URL, path); err != nil {
 			return fmt.Errorf("repository %s bootstrap: %w; remove incomplete clone after inspection and retry", r.Name, err)
 		}
-		e.logOperation("bootstrap", r.Name, path, "cloned trunk %s", r.Trunk)
+		e.logOperationOutcome("bootstrap", r.Name, path, "", "cloned", LogChanged, " trunk %s", r.Trunk)
 	}
 	return nil
 }
@@ -241,7 +242,7 @@ func (e *Engine) backup(operation, path, label string, m *Manifest) error {
 			return err
 		}
 	}
-	e.logOperation(operation, label, path, "created recovery backup %s; history %s", filename, ref)
+	e.logOperationOutcome(operation, label, path, "", "created", LogChanged, " recovery backup %s; history %s", filename, ref)
 	return nil
 }
 func (e *Engine) syncOne(r Repository, create bool) (string, error) {
@@ -319,7 +320,7 @@ func (e *Engine) syncOne(r Repository, create bool) (string, error) {
 	if create {
 		logOperation = "create"
 	}
-	e.logOperation(logOperation, r.Name, p, "synchronized trunk %s %s -> %s (%s)", r.Trunk, abbreviateRevision(trunk), abbreviateRevision(after), operation)
+	e.logOperationOutcome(logOperation, r.Name, p, "", "synchronized", LogChanged, " trunk %s %s -> %s (%s)", r.Trunk, abbreviateRevision(trunk), abbreviateRevision(after), operation)
 	return after, nil
 }
 func (e *Engine) Sync() error {
@@ -626,7 +627,7 @@ func (e *Engine) resumeCreate(m *Manifest) error {
 			if err := e.store.save(m); err != nil {
 				return err
 			}
-			e.logOperation("create", r.Repository.Name, r.Path, "created managed worktree at %s", abbreviateRevision(r.Base))
+			e.logOperationOutcome("create", r.Repository.Name, r.Path, "", "created", LogChanged, " managed worktree at %s", abbreviateRevision(r.Base))
 		}
 		if err := e.owned(m, r); err != nil {
 			return err
@@ -665,7 +666,7 @@ func (e *Engine) hooksAt(m *Manifest, r *RepoState, phase, directory string, upd
 	}
 	if (phase == HookMergeBefore || phase == HookMergeAfter) && e.SkipMergeHooks[phase] {
 		for _, h := range hooks[phase] {
-			if err := e.logHook(r.Repository.Name, phase, h.ID, directory, "skipped by --skip-hooks"); err != nil {
+			if err := e.logHook(r.Repository.Name, phase, h.ID, directory, "skipped", LogSuccess, " by --skip-hooks"); err != nil {
 				return fmt.Errorf("repository %s phase %s hook %s diagnostic: %w", r.Repository.Name, phase, h.ID, err)
 			}
 		}
@@ -726,11 +727,11 @@ func (e *Engine) hooksAt(m *Manifest, r *RepoState, phase, directory string, upd
 		}
 		cmd.Dir = directory
 		cmd.Env = hookEnvironment
-		prefix := fmt.Sprintf("[hook/%s/%s/%s @ %s] ", r.Repository.Name, phase, h.ID, directory)
+		prefix := e.logPrefix("hook/"+r.Repository.Name+"/"+phase, h.ID, directory) + " "
 		hookOutput := newPrefixedLineWriter(e.Out, prefix)
 		cmd.Stdout = hookOutput
 		cmd.Stderr = hookOutput
-		if err := e.logHook(r.Repository.Name, phase, h.ID, directory, "started"); err != nil {
+		if err := e.logHook(r.Repository.Name, phase, h.ID, directory, "started", LogChanged, ""); err != nil {
 			return fmt.Errorf("repository %s phase %s hook %s diagnostic: %w", r.Repository.Name, phase, h.ID, err)
 		}
 		processErr := cmd.Run()
@@ -762,7 +763,7 @@ func (e *Engine) hooksAt(m *Manifest, r *RepoState, phase, directory string, upd
 				if saveErr := e.store.save(m); saveErr != nil {
 					return saveErr
 				}
-				if logErr := e.logHook(r.Repository.Name, phase, h.ID, directory, fmt.Sprintf("failed (ignored by --force): %v", processErr)); logErr != nil {
+				if logErr := e.logHook(r.Repository.Name, phase, h.ID, directory, "failed", LogFailure, fmt.Sprintf(" (ignored by --force): %v", processErr)); logErr != nil {
 					return fmt.Errorf("repository %s phase %s hook %s diagnostic: %w", r.Repository.Name, phase, h.ID, logErr)
 				}
 				continue
@@ -780,7 +781,7 @@ func (e *Engine) hooksAt(m *Manifest, r *RepoState, phase, directory string, upd
 		if err = e.store.save(m); err != nil {
 			return err
 		}
-		if err = e.logHook(r.Repository.Name, phase, h.ID, directory, "completed"); err != nil {
+		if err = e.logHook(r.Repository.Name, phase, h.ID, directory, "completed", LogSuccess, ""); err != nil {
 			return fmt.Errorf("repository %s phase %s hook %s diagnostic: %w", r.Repository.Name, phase, h.ID, err)
 		}
 	}

@@ -106,10 +106,10 @@ func (e *Engine) Refresh(m *Manifest) error {
 			return err
 		}
 		if r.Base == baseBefore {
-			e.logOperation("refresh", r.Repository.Name, r.Path, "already current at base %s; source %s", abbreviateRevision(r.Base), abbreviateRevision(r.Source))
+			e.logOperationOutcome("refresh", r.Repository.Name, r.Path, "", "already current", LogSuccess, " at base %s; source %s", abbreviateRevision(r.Base), abbreviateRevision(r.Source))
 			return nil
 		}
-		e.logOperation("refresh", r.Repository.Name, r.Path, "updated base %s -> %s; source %s -> %s", abbreviateRevision(baseBefore), abbreviateRevision(r.Base), abbreviateRevision(sourceBefore), abbreviateRevision(r.Source))
+		e.logOperationOutcome("refresh", r.Repository.Name, r.Path, "", "updated", LogChanged, " base %s -> %s; source %s -> %s", abbreviateRevision(baseBefore), abbreviateRevision(r.Base), abbreviateRevision(sourceBefore), abbreviateRevision(r.Source))
 		return nil
 	}
 	for i := 1; i < len(m.Repositories); i++ {

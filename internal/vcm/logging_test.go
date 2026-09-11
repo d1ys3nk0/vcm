@@ -2,6 +2,7 @@ package vcm
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,6 +25,44 @@ func TestPrefixedLineWriterPrefixesFragmentedLinesAndFlushesTail(t *testing.T) {
 		"[hook/api/create-after/lint @ /work/api] partial\n"
 	if output.String() != want {
 		t.Fatalf("prefixed output:\n%s\nwant:\n%s", output.String(), want)
+	}
+}
+
+func TestColoredFragmentedHookOutputStylesOnlyContext(t *testing.T) {
+	const prefix = "\x1b[1;36m[hook/api/create-after/lint @ \x1b[0m/work/api\x1b[1;36m]\x1b[0m "
+	var output bytes.Buffer
+	writer := newPrefixedLineWriter(&output, prefix)
+	for _, fragment := range []string{"payload says fa", "iled\nraw \x1b[31mbytes\n", "tail"} {
+		if _, err := writer.Write([]byte(fragment)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	want := prefix + "payload says failed\n" + prefix + "raw \x1b[31mbytes\n" + prefix + "tail\n"
+	if output.String() != want {
+		t.Fatalf("colored prefixed output = %q, want %q", output.String(), want)
+	}
+}
+
+func TestTypedLogSemanticsColorExplicitTokensOnly(t *testing.T) {
+	var output bytes.Buffer
+	e := &Engine{Out: &output, Style: func(semantic LogSemantic, text string) string {
+		return fmt.Sprintf("<%d>%s</%d>", semantic, text, semantic)
+	}}
+	if err := e.logHook("api", "merge-before", "gate", "/work/api", "failed", LogFailure, " detail says completed"); err != nil {
+		t.Fatal(err)
+	}
+	e.logOperationOutcome("prune", "api", "/work/api", "delete_branch ", "declined", LogWarning, " for topic")
+	e.logOperationOutcome("bootstrap", "api", "/work/api", "", "cloned", LogChanged, " trunk %s", "main")
+	e.logOperationOutcome("refresh", "api", "/work/api", "", "already current", LogSuccess, " at base %s", "abcdef")
+	want := "<0>[hook/api/merge-before/gate @ </0>/work/api<0>]</0> <4>failed</4> detail says completed\n" +
+		"<0>[prune/api @ </0>/work/api<0>]</0> delete_branch <2>declined</2> for topic\n" +
+		"<0>[bootstrap/api @ </0>/work/api<0>]</0> <1>cloned</1> trunk main\n" +
+		"<0>[refresh/api @ </0>/work/api<0>]</0> <3>already current</3> at base abcdef\n"
+	if output.String() != want {
+		t.Fatalf("semantic log output = %q, want %q", output.String(), want)
 	}
 }
 

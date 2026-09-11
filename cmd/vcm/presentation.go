@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"text/tabwriter"
 	"time"
+	"unicode/utf8"
 
 	"github.com/d1ys3nk0/vcm/internal/vcm"
 )
@@ -294,13 +294,64 @@ func renderJSON(out io.Writer, result any) error {
 }
 
 func renderTable(out io.Writer, rows [][]string) error {
-	w := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+	widths := []int{}
 	for _, row := range rows {
-		if _, err := fmt.Fprintln(w, strings.Join(row, "\t")); err != nil {
+		for column, cell := range row {
+			if column == len(row)-1 {
+				continue
+			}
+			for len(widths) <= column {
+				widths = append(widths, 0)
+			}
+			if width := visibleWidth(cell); width > widths[column] {
+				widths[column] = width
+			}
+		}
+	}
+	for _, row := range rows {
+		for column, cell := range row {
+			if _, err := fmt.Fprint(out, cell); err != nil {
+				return err
+			}
+			if column < len(row)-1 {
+				if _, err := fmt.Fprint(out, strings.Repeat(" ", widths[column]-visibleWidth(cell)+2)); err != nil {
+					return err
+				}
+			}
+		}
+		if _, err := fmt.Fprintln(out); err != nil {
 			return err
 		}
 	}
-	return w.Flush()
+	return nil
+}
+
+func visibleWidth(text string) int {
+	width := 0
+	for len(text) > 0 {
+		if strings.HasPrefix(text, "\x1b[") {
+			if end := strings.IndexByte(text, 'm'); end >= 0 {
+				text = text[end+1:]
+				continue
+			}
+		}
+		_, size := utf8.DecodeRuneInString(text)
+		text = text[size:]
+		width++
+	}
+	return width
+}
+
+func tableHeader(style humanStyle, labels ...string) []string {
+	row := make([]string, len(labels))
+	for i, label := range labels {
+		row[i] = style.tablePaint(semanticCyanBold, label)
+	}
+	return row
+}
+
+func tableStatus(style humanStyle, status string) string {
+	return style.tablePaint(statusColor(status), status)
 }
 
 func abbreviated(revision string) string {
@@ -340,66 +391,70 @@ func commandLabel(command string) string {
 }
 
 func renderHuman(out io.Writer, result any) error {
+	return renderHumanStyled(out, result, humanStyle{})
+}
+
+func renderHumanStyled(out io.Writer, result any, style humanStyle) error {
 	switch value := result.(type) {
 	case validateResult:
-		_, err := fmt.Fprintf(out, "Configuration valid.\nWorkspace: %s\n", value.Workspace)
+		_, err := fmt.Fprintf(out, "Configuration %s.\n%s %s\n", style.paint(semanticGreen, "valid"), style.paint(semanticCyanBold, "Workspace:"), value.Workspace)
 		return err
 	case commandResult:
-		_, err := fmt.Fprintf(out, "%s complete.\nWorkspace: %s\n", commandLabel(value.Command), value.Workspace)
+		_, err := fmt.Fprintf(out, "%s %s.\n%s %s\n", commandLabel(value.Command), style.paint(semanticGreen, "complete"), style.paint(semanticCyanBold, "Workspace:"), value.Workspace)
 		return err
 	case vcm.AuditReport:
-		repositories := [][]string{{"Repository", "State", "Origin"}}
+		repositories := [][]string{tableHeader(style, "Repository", "State", "Origin")}
 		for _, repository := range value.Repositories {
 			state := "clean"
 			if !repository.Clean {
 				state = "issues"
 			}
-			repositories = append(repositories, []string{repository.Name, state, repository.Origin})
+			repositories = append(repositories, []string{repository.Name, tableStatus(style, state), repository.Origin})
 		}
 		if err := renderTable(out, repositories); err != nil {
 			return err
 		}
 		if len(value.Issues) == 0 {
-			_, err := fmt.Fprintln(out, "\nWorkspace clean.")
+			_, err := fmt.Fprintf(out, "\nWorkspace %s.\n", style.paint(semanticGreen, "clean"))
 			return err
 		}
-		if _, err := fmt.Fprintln(out, "\nFindings:"); err != nil {
+		if _, err := fmt.Fprintf(out, "\n%s\n", style.paint(semanticRed, "Findings:")); err != nil {
 			return err
 		}
-		issues := [][]string{{"Repository", "Kind", "Target", "Detail"}}
+		issues := [][]string{tableHeader(style, "Repository", "Kind", "Target", "Detail")}
 		for _, issue := range value.Issues {
 			issues = append(issues, []string{issue.Repository, issue.Kind, auditIssueTarget(issue), issue.Detail})
 		}
 		return renderTable(out, issues)
 	case vcm.PruneReport:
-		actions := [][]string{{"Repository", "Action", "Target", "Status", "Detail"}}
+		actions := [][]string{tableHeader(style, "Repository", "Action", "Target", "Status", "Detail")}
 		for _, action := range value.Actions {
-			actions = append(actions, []string{action.Repository, action.Action, action.Target, action.Status, action.Detail})
+			actions = append(actions, []string{action.Repository, action.Action, action.Target, tableStatus(style, action.Status), action.Detail})
 		}
 		if err := renderTable(out, actions); err != nil {
 			return err
 		}
 		if len(value.RemainingIssues) == 0 {
-			_, err := fmt.Fprintln(out, "\nPrune complete.")
+			_, err := fmt.Fprintf(out, "\nPrune %s.\n", style.paint(semanticGreen, "complete"))
 			return err
 		}
-		if _, err := fmt.Fprintln(out, "\nRemaining findings:"); err != nil {
+		if _, err := fmt.Fprintf(out, "\nRemaining %s\n", style.paint(semanticRed, "findings:")); err != nil {
 			return err
 		}
-		issues := [][]string{{"Repository", "Kind", "Target", "Detail"}}
+		issues := [][]string{tableHeader(style, "Repository", "Kind", "Target", "Detail")}
 		for _, issue := range value.RemainingIssues {
 			issues = append(issues, []string{issue.Repository, issue.Kind, auditIssueTarget(issue), issue.Detail})
 		}
 		return renderTable(out, issues)
 	case createResult:
-		_, err := fmt.Fprintf(out, "Created Change %s with %d repositories.\nWorkspace: %s\n", value.Tag, len(value.Repositories), value.Workspace)
+		_, err := fmt.Fprintf(out, "%s Change %s with %d repositories.\n%s %s\n", style.paint(semanticGreen, "Created"), value.Tag, len(value.Repositories), style.paint(semanticCyanBold, "Workspace:"), value.Workspace)
 		return err
 	case []listResult:
 		if len(value) == 0 {
 			_, err := fmt.Fprintln(out, "No Changes.")
 			return err
 		}
-		rows := [][]string{{"", "Change", "State", "Repos", "Age", "Workspace"}}
+		rows := [][]string{tableHeader(style, "", "Change", "State", "Repos", "Age", "Workspace")}
 		now := time.Now().UTC()
 		for _, change := range value {
 			marker := ""
@@ -410,39 +465,39 @@ func renderHuman(out io.Writer, result any) error {
 			if change.State == "dropping" || change.State == "dropped" {
 				repos = fmt.Sprintf("%d/%d removed", change.RemovedCount, change.RepositoryCount)
 			}
-			rows = append(rows, []string{marker, change.Tag, change.State, repos, age(now, change.CreatedAt), change.Workspace})
+			rows = append(rows, []string{marker, change.Tag, tableStatus(style, change.State), repos, age(now, change.CreatedAt), change.Workspace})
 		}
 		return renderTable(out, rows)
 	case statusResult:
-		if _, err := fmt.Fprintf(out, "Change: %s\nState: %s\nCreated: %s\nWorkspace: %s\n\n", value.Tag, value.State, value.CreatedAt.Format(time.RFC3339), value.Workspace); err != nil {
+		if _, err := fmt.Fprintf(out, "%s %s\n%s %s\n%s %s\n%s %s\n\n", style.paint(semanticCyanBold, "Change:"), value.Tag, style.paint(semanticCyanBold, "State:"), style.paint(statusColor(value.State), value.State), style.paint(semanticCyanBold, "Created:"), value.CreatedAt.Format(time.RFC3339), style.paint(semanticCyanBold, "Workspace:"), value.Workspace); err != nil {
 			return err
 		}
-		repositories := [][]string{{"Repository", "Status", "HEAD", "Target", "Detail"}}
+		repositories := [][]string{tableHeader(style, "Repository", "Status", "HEAD", "Target", "Detail")}
 		for _, repository := range value.Repositories {
-			repositories = append(repositories, []string{repository.Name, repository.Status, abbreviated(repository.Head), abbreviated(repository.Target), repository.Error})
+			repositories = append(repositories, []string{repository.Name, tableStatus(style, repository.Status), abbreviated(repository.Head), abbreviated(repository.Target), repository.Error})
 		}
 		if err := renderTable(out, repositories); err != nil {
 			return err
 		}
-		if _, err := fmt.Fprintln(out, "\nHooks:"); err != nil {
+		if _, err := fmt.Fprintf(out, "\n%s\n", style.paint(semanticCyanBold, "Hooks:")); err != nil {
 			return err
 		}
-		hooks := [][]string{{"Repository", "Phase", "Hook", "Status", "Error"}}
+		hooks := [][]string{tableHeader(style, "Repository", "Phase", "Hook", "Status", "Error")}
 		for _, hook := range value.Hooks {
-			hooks = append(hooks, []string{hook.Repository, hook.Phase, hook.ID, hook.Status, hook.Error})
+			hooks = append(hooks, []string{hook.Repository, hook.Phase, hook.ID, tableStatus(style, hook.Status), hook.Error})
 		}
 		if err := renderTable(out, hooks); err != nil {
 			return err
 		}
 		if len(value.Backups) > 0 {
-			fmt.Fprintln(out, "\nBackups:")
+			fmt.Fprintf(out, "\n%s\n", style.paint(semanticCyanBold, "Backups:"))
 			for _, backup := range value.Backups {
 				fmt.Fprintf(out, "  %s\n", backup)
 			}
-			fmt.Fprintf(out, "Recovery directory: %s\n", value.RecoveryDirectory)
+			fmt.Fprintf(out, "%s %s\n", style.paint(semanticCyanBold, "Recovery directory:"), value.RecoveryDirectory)
 		}
 		if len(value.PendingSync) > 0 {
-			fmt.Fprintln(out, "\nPending synchronization:")
+			fmt.Fprintf(out, "\n%s\n", style.paint(semanticYellow, "Pending synchronization:"))
 			for _, pending := range value.PendingSync {
 				detail := pending.Path
 				if pending.Error != "" {
@@ -459,10 +514,10 @@ func renderHuman(out io.Writer, result any) error {
 				merged++
 			}
 		}
-		_, err := fmt.Fprintf(out, "Merged Change %s (%d/%d repositories).\n", value.Tag, merged, len(value.Repositories))
+		_, err := fmt.Fprintf(out, "%s Change %s (%d/%d repositories).\n", style.paint(semanticGreen, "Merged"), value.Tag, merged, len(value.Repositories))
 		return err
 	case refreshResult:
-		_, err := fmt.Fprintf(out, "Refreshed Change %s (%d repositories).\n", value.Tag, len(value.Repositories))
+		_, err := fmt.Fprintf(out, "%s Change %s (%d repositories).\n", style.paint(semanticGreen, "Refreshed"), value.Tag, len(value.Repositories))
 		return err
 	case dropResult:
 		removed := 0
@@ -471,30 +526,30 @@ func renderHuman(out io.Writer, result any) error {
 				removed++
 			}
 		}
-		_, err := fmt.Fprintf(out, "Dropped Change %s (%d/%d repositories removed, %d recovery backups).\n", value.Tag, removed, len(value.Repositories), len(value.Backups))
+		_, err := fmt.Fprintf(out, "%s Change %s (%d/%d repositories removed, %d recovery backups).\n", style.paint(semanticGreen, "Dropped"), value.Tag, removed, len(value.Repositories), len(value.Backups))
 		return err
 	case versionResult:
 		_, err := fmt.Fprintf(out, "vcm %s (%s)\n", value.Version, value.Commit)
 		return err
 	case dryRunResult:
-		if _, err := fmt.Fprintf(out, "Dry run: %s\n", value.Command); err != nil {
+		if _, err := fmt.Fprintf(out, "%s %s\n", style.paint(semanticYellow, "Dry run:"), value.Command); err != nil {
 			return err
 		}
 		if value.Command == "sync" || value.Command == "merge" || value.Command == "drop" {
-			fmt.Fprintf(out, "Force: %t\n", value.Force)
+			fmt.Fprintf(out, "%s %t\n", style.paint(semanticCyanBold, "Force:"), value.Force)
 		}
 		if value.Command == "merge" {
-			fmt.Fprintf(out, "Delete ignored content: %t\n", value.DeletesIgnoredContent)
-			fmt.Fprintf(out, "Skipped hook phases: %s\n", strings.Join(value.SkippedHookPhases, ","))
-			fmt.Fprintf(out, "Git hooks suppressed: %t\n", value.SkipGitHooks)
+			fmt.Fprintf(out, "%s %t\n", style.paint(semanticCyanBold, "Delete ignored content:"), value.DeletesIgnoredContent)
+			fmt.Fprintf(out, "%s %s\n", style.paint(semanticCyanBold, "Skipped hook phases:"), strings.Join(value.SkippedHookPhases, ","))
+			fmt.Fprintf(out, "%s %t\n", style.paint(semanticCyanBold, "Git hooks suppressed:"), value.SkipGitHooks)
 		}
 		if value.Tag != "" {
-			fmt.Fprintf(out, "Change: %s\n", value.Tag)
+			fmt.Fprintf(out, "%s %s\n", style.paint(semanticCyanBold, "Change:"), value.Tag)
 		}
 		if value.Workspace != "" {
-			fmt.Fprintf(out, "Workspace: %s\n", value.Workspace)
+			fmt.Fprintf(out, "%s %s\n", style.paint(semanticCyanBold, "Workspace:"), value.Workspace)
 		}
-		fmt.Fprintln(out, "Resources:")
+		fmt.Fprintln(out, style.paint(semanticCyanBold, "Resources:"))
 		for _, resource := range value.Resources {
 			fmt.Fprintf(out, "  %s\n", resource)
 		}
@@ -515,11 +570,15 @@ func auditIssueTarget(issue vcm.AuditIssue) string {
 }
 
 func writeError(out io.Writer, jsonOutput bool, err error) {
+	writeErrorStyled(out, jsonOutput, err, humanStyle{})
+}
+
+func writeErrorStyled(out io.Writer, jsonOutput bool, err error, style humanStyle) {
 	if jsonOutput {
 		result := errorResult{}
 		result.Error.Message = err.Error()
 		_ = renderJSON(out, result)
 		return
 	}
-	fmt.Fprintln(out, "vcm:", err)
+	fmt.Fprintln(out, style.paint(semanticRed, "vcm:"), err)
 }

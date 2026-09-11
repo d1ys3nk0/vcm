@@ -71,7 +71,7 @@ func (e *Engine) preflightPush(repository *pushRepository) error {
 		return fmt.Errorf("repository %s push preflight: remote trunk %s is not an ancestor of the local trunk; local trunk is behind or divergent", r.Name, r.Trunk)
 	}
 	repository.local = local
-	e.logOperation("push", r.Name, repository.path, "preflight complete for trunk %s at %s", r.Trunk, abbreviateRevision(local))
+	e.logOperationOutcome("push", r.Name, repository.path, "", "preflight complete", LogSuccess, " for trunk %s at %s", r.Trunk, abbreviateRevision(local))
 	return nil
 }
 
@@ -93,7 +93,7 @@ func (e *Engine) Push() error {
 		if _, err := git(repository.path, "push", "origin", refspec); err != nil {
 			return fmt.Errorf("repository %s push: %w; earlier repositories may already be published, inspect remotes and retry", r.Name, err)
 		}
-		e.logOperation("push", r.Name, repository.path, "pushed trunk %s at %s", r.Trunk, abbreviateRevision(repository.local))
+		e.logOperationOutcome("push", r.Name, repository.path, "", "pushed", LogChanged, " trunk %s at %s", r.Trunk, abbreviateRevision(repository.local))
 	}
 	return nil
 }

@@ -260,7 +260,7 @@ func (e *Engine) removeOne(operation string, m *Manifest, r *RepoState) error {
 	if err := e.store.save(m); err != nil {
 		return err
 	}
-	e.logOperation(operation, r.Repository.Name, r.Path, "removed managed worktree and branch %s", m.Tag)
+	e.logOperationOutcome(operation, r.Repository.Name, r.Path, "", "removed", LogChanged, " managed worktree and branch %s", m.Tag)
 	return nil
 }
 
@@ -465,7 +465,7 @@ func (e *Engine) preflight(m *Manifest) error {
 				if err := e.store.save(m); err != nil {
 					return err
 				}
-				e.logOperation("merge", r.Repository.Name, r.Origin, "applied trunk %s %s -> %s", r.Repository.Trunk, abbreviateRevision(r.TargetBefore), abbreviateRevision(r.Target))
+				e.logOperationOutcome("merge", r.Repository.Name, r.Origin, "", "applied", LogChanged, " trunk %s %s -> %s", r.Repository.Trunk, abbreviateRevision(r.TargetBefore), abbreviateRevision(r.Target))
 				continue
 			}
 			if target == r.TargetBefore {
@@ -540,7 +540,7 @@ func (e *Engine) freezeMerge(m *Manifest) error {
 		return err
 	}
 	for _, r := range unchanged {
-		e.logOperation("merge", r.Repository.Name, r.Origin, "trunk %s unchanged at %s", r.Repository.Trunk, abbreviateRevision(r.Target))
+		e.logOperationOutcome("merge", r.Repository.Name, r.Origin, fmt.Sprintf("trunk %s ", r.Repository.Trunk), "unchanged", LogSuccess, " at %s", abbreviateRevision(r.Target))
 	}
 	return nil
 }
@@ -568,7 +568,7 @@ func (e *Engine) applyMerge(m *Manifest, r *RepoState) error {
 		if err := e.store.save(m); err != nil {
 			return err
 		}
-		e.logOperation("merge", r.Repository.Name, r.Origin, "applied trunk %s %s -> %s", r.Repository.Trunk, abbreviateRevision(r.TargetBefore), abbreviateRevision(r.Target))
+		e.logOperationOutcome("merge", r.Repository.Name, r.Origin, "", "applied", LogChanged, " trunk %s %s -> %s", r.Repository.Trunk, abbreviateRevision(r.TargetBefore), abbreviateRevision(r.Target))
 		return nil
 	}
 	if target != r.TargetBefore {
@@ -587,7 +587,7 @@ func (e *Engine) applyMerge(m *Manifest, r *RepoState) error {
 	if err := e.store.save(m); err != nil {
 		return err
 	}
-	e.logOperation("merge", r.Repository.Name, r.Origin, "applied trunk %s %s -> %s", r.Repository.Trunk, abbreviateRevision(r.TargetBefore), abbreviateRevision(r.Target))
+	e.logOperationOutcome("merge", r.Repository.Name, r.Origin, "", "applied", LogChanged, " trunk %s %s -> %s", r.Repository.Trunk, abbreviateRevision(r.TargetBefore), abbreviateRevision(r.Target))
 	return nil
 }
 

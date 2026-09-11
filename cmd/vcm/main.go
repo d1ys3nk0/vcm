@@ -40,6 +40,7 @@ Global options:
   --workspace PATH     Workspace root. By default, VCM searches upward from the current
                        directory for vcm.yml at a Git root.
   --json               Emit machine-readable JSON to stdout.
+  --color MODE         Color human output: auto, always, or never (default: auto).
   --dry-run            Show the operation plan without changing files or running hooks.
                        Supported by bootstrap, sync, push, create, refresh, merge, drop, and prune.
   -f, --force          For merge, ignore clean lifecycle hook command failures. For sync,
@@ -97,9 +98,11 @@ func run(args []string) error {
 	flags.SetOutput(io.Discard)
 	flags.Usage = func() {}
 	workspace, only, except, message, skipHooks := "", "", "", "", ""
+	color := colorAuto
 	jsonOutput, dry, force, skipGitHooks := false, false, false, false
 	flags.StringVar(&workspace, "workspace", "", "workspace root")
 	flags.BoolVar(&jsonOutput, "json", false, "machine-readable output")
+	flags.Var(&color, "color", "color human output: auto, always, or never")
 	flags.BoolVar(&dry, "dry-run", false, "show operation plan")
 	flags.BoolVar(&force, "force", false, "preserve recovery backups and discard changes")
 	flags.BoolVar(&force, "f", false, "force the selected operation")
@@ -114,7 +117,7 @@ func run(args []string) error {
 	for i := 0; i < len(args); i++ {
 		if strings.HasPrefix(args[i], "-") {
 			options = append(options, args[i])
-			if args[i] == "--workspace" || args[i] == "-workspace" || args[i] == "--only" || args[i] == "-only" || args[i] == "--except" || args[i] == "-except" || args[i] == "--message" || args[i] == "-message" || args[i] == "--skip-hooks" || args[i] == "-skip-hooks" {
+			if args[i] == "--workspace" || args[i] == "-workspace" || args[i] == "--color" || args[i] == "-color" || args[i] == "--only" || args[i] == "-only" || args[i] == "--except" || args[i] == "-except" || args[i] == "--message" || args[i] == "-message" || args[i] == "--skip-hooks" || args[i] == "-skip-hooks" {
 				i++
 				if i == len(args) {
 					return fmt.Errorf("%s requires a value", options[len(options)-1])
@@ -137,11 +140,13 @@ func run(args []string) error {
 		return fmt.Errorf("command required")
 	}
 	command := positionals[0]
+	stdoutStyle := humanStyle{enabled: colorEnabled(color, stdoutIsTerminal(), jsonOutput)}
+	stderrStyle := humanStyle{enabled: colorEnabled(color, stderrIsTerminal(), jsonOutput)}
 	output := func(result any) error {
 		if jsonOutput {
 			return renderJSON(os.Stdout, result)
 		}
-		return renderHuman(os.Stdout, result)
+		return renderHumanStyled(os.Stdout, result, stdoutStyle)
 	}
 	if len(positionals) > 2 {
 		return fmt.Errorf("too many arguments")
@@ -194,6 +199,20 @@ func run(args []string) error {
 		return err
 	}
 	engine.DryRun = dry
+	engine.Style = func(semantic vcm.LogSemantic, text string) string {
+		color := semanticNone
+		switch semantic {
+		case vcm.LogContext:
+			color = semanticCyanBold
+		case vcm.LogChanged, vcm.LogWarning:
+			color = semanticYellow
+		case vcm.LogSuccess:
+			color = semanticGreen
+		case vcm.LogFailure:
+			color = semanticRed
+		}
+		return stderrStyle.paint(color, text)
+	}
 	engine.Force = force && command != "merge"
 	engine.MergeForce = force && command == "merge"
 	engine.SkipGitHooks = skipGitHooks
@@ -243,7 +262,7 @@ func run(args []string) error {
 			}
 			reader := bufio.NewReader(commandInput)
 			confirm := func(action vcm.PruneAction) bool {
-				fmt.Fprintf(os.Stderr, "%s %s in repository %s? [y/N] ", pruneActionPrompt(action.Action), action.Target, action.Repository)
+				fmt.Fprintf(os.Stderr, "%s %s in repository %s? [y/N] ", stderrStyle.paint(semanticYellow, pruneActionPrompt(action.Action)), action.Target, action.Repository)
 				answer, _ := reader.ReadString('\n')
 				answer = strings.TrimSpace(answer)
 				return strings.EqualFold(answer, "y") || strings.EqualFold(answer, "yes")
@@ -412,7 +431,9 @@ func runMain(args []string) int {
 		if errors.As(err, &incomplete) {
 			return 1
 		}
-		writeError(os.Stderr, requestsJSON(args), err)
+		jsonOutput := requestsJSON(args)
+		style := humanStyle{enabled: colorEnabled(parseRequestedColorMode(args), stderrIsTerminal(), jsonOutput)}
+		writeErrorStyled(os.Stderr, jsonOutput, err, style)
 		return 1
 	}
 	return 0

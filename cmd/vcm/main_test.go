@@ -403,7 +403,7 @@ func TestCLIPushReportsResultAndProgress(t *testing.T) {
 			t.Fatalf("git %v: %s %v", args, out, err)
 		}
 	}
-	stdout, stderr, err := runCapturedOutput(t, "push", "--json", "--workspace", root)
+	stdout, stderr, err := runCapturedOutput(t, "push", "--json", "--color=always", "--workspace", root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -413,6 +413,9 @@ func TestCLIPushReportsResultAndProgress(t *testing.T) {
 	}
 	if result.Command != "push" || !result.Complete || result.Workspace != root {
 		t.Fatalf("unexpected push result: %+v", result)
+	}
+	if strings.Contains(stdout, "\x1b[") || strings.Contains(stderr, "\x1b[") {
+		t.Fatalf("JSON mode emitted ANSI: stdout %q, stderr %q", stdout, stderr)
 	}
 	for _, want := range []string{"[push/root @ " + root + "] preflight complete for trunk main", "[push/root @ " + root + "] pushed trunk main"} {
 		if !strings.Contains(stderr, want) {
