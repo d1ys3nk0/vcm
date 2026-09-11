@@ -45,6 +45,10 @@ func commitFile(t *testing.T, path, name, content string) {
 	mustGit(t, path, "add", "--", name)
 	mustGit(t, path, "commit", "-m", "feat: update "+name)
 }
+func abbreviated(t *testing.T, path, revision string) string {
+	t.Helper()
+	return mustGit(t, path, "rev-parse", "--short=7", revision)
+}
 func fixture(t *testing.T, n int) *Engine {
 	t.Helper()
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
@@ -197,8 +201,13 @@ func TestMergeMessageContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	wantMessages := map[string]string{}
+	sourceRevisions := map[string]string{}
 	for i := range m.Repositories {
 		commitFile(t, m.Repositories[i].Path, "changed.txt", "changed\n")
+		revision := mustGit(t, m.Repositories[i].Path, "rev-parse", "HEAD")
+		sourceRevisions[m.Repositories[i].Repository.Name] = revision
+		wantMessages[m.Repositories[i].Repository.Name] = "feat: shared subject\n\nCommits:\n- " + abbreviated(t, m.Repositories[i].Path, revision) + " feat: update changed.txt"
 	}
 	if err = e.Merge(m, "not conventional"); err == nil {
 		t.Fatal("fresh merge accepted invalid message")
@@ -213,6 +222,14 @@ func TestMergeMessageContract(t *testing.T) {
 	if err = e.Refresh(m); err != nil {
 		t.Fatal(err)
 	}
+	rootRefresh := mustGit(t, m.Workspace, "rev-parse", "HEAD")
+	wantMessages["root"] = strings.Join([]string{
+		"feat: shared subject",
+		"",
+		"Commits:",
+		"- " + abbreviated(t, m.Workspace, rootRefresh) + " chore(vcm): refresh " + m.Tag,
+		"- " + abbreviated(t, m.Workspace, sourceRevisions["root"]) + " feat: update changed.txt",
+	}, "\n")
 	if err = e.Merge(m, "feat: shared subject"); err == nil {
 		t.Fatal("expected gate interruption")
 	}
@@ -228,8 +245,8 @@ func TestMergeMessageContract(t *testing.T) {
 	}
 	for _, r := range m.Repositories {
 		body := mustGit(t, r.Origin, "log", "-1", "--format=%B")
-		if !strings.Contains(body, "feat: shared subject") || !strings.Contains(body, "VCM-Change: "+m.Tag) {
-			t.Fatalf("repository %s commit message: %q", r.Repository.Name, body)
+		if body != wantMessages[r.Repository.Name] {
+			t.Fatalf("repository %s commit message:\n%q\nwant:\n%q", r.Repository.Name, body, wantMessages[r.Repository.Name])
 		}
 	}
 }
@@ -240,8 +257,11 @@ func TestMergeDefaultMessageAcrossChangedRepositories(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	wantMessages := map[string]string{}
 	for i := range m.Repositories {
 		commitFile(t, m.Repositories[i].Path, "default.txt", "changed\n")
+		revision := mustGit(t, m.Repositories[i].Path, "rev-parse", "HEAD")
+		wantMessages[m.Repositories[i].Repository.Name] = "feat: default-message\n\nCommits:\n- " + abbreviated(t, m.Repositories[i].Path, revision) + " feat: update default.txt"
 	}
 	if err = e.Merge(m); err != nil {
 		t.Fatal(err)
@@ -251,8 +271,70 @@ func TestMergeDefaultMessageAcrossChangedRepositories(t *testing.T) {
 	}
 	for _, repository := range m.Repositories {
 		body := mustGit(t, repository.Origin, "log", "-1", "--format=%B")
-		if !strings.Contains(body, "feat: default-message") || !strings.Contains(body, "VCM-Change: "+m.Tag) {
-			t.Fatalf("repository %s commit message: %q", repository.Repository.Name, body)
+		if body != wantMessages[repository.Repository.Name] {
+			t.Fatalf("repository %s commit message:\n%q\nwant:\n%q", repository.Repository.Name, body, wantMessages[repository.Repository.Name])
+		}
+	}
+}
+
+func TestMergeCommitHistoryPerRepository(t *testing.T) {
+	e := fixture(t, 2)
+	e.Config.Children[0].Hooks = Hooks{HookMergeBefore: {{ID: "history", Shell: `printf 'hook\n' > hook.txt; git add hook.txt; git commit -m 'chore: merge hook' -m 'hook body must be omitted'`}}}
+	saveContractConfig(t, e)
+	m, err := e.Create("commit-history")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	root := &m.Repositories[0]
+	put(t, filepath.Join(root.Path, "root.txt"), "root\n")
+	mustGit(t, root.Path, "add", "root.txt")
+	command := exec.Command("git", "-C", root.Path, "commit", "-m", "feat: root source", "-m", "private root body")
+	command.Env = append(os.Environ(), "GIT_AUTHOR_NAME=Hidden Author", "GIT_AUTHOR_EMAIL=hidden@example.test", "GIT_AUTHOR_DATE=2001-02-03T04:05:06Z")
+	if output, commandErr := command.CombinedOutput(); commandErr != nil {
+		t.Fatalf("custom root commit: %s: %v", output, commandErr)
+	}
+	rootSource := mustGit(t, root.Path, "rev-parse", "HEAD")
+
+	changed := &m.Repositories[1]
+	put(t, filepath.Join(changed.Path, "source.txt"), "source\n")
+	mustGit(t, changed.Path, "add", "source.txt")
+	mustGit(t, changed.Path, "commit", "-m", "feat: child source", "-m", "child body must be omitted")
+	childSource := mustGit(t, changed.Path, "rev-parse", "HEAD")
+	commitFile(t, changed.Origin, "trunk.txt", "trunk\n")
+	trunkCommit := mustGit(t, changed.Origin, "rev-parse", "HEAD")
+	unchangedBefore := mustGit(t, m.Repositories[2].Origin, "rev-parse", "HEAD")
+
+	if err = e.Refresh(m); err != nil {
+		t.Fatal(err)
+	}
+	refreshCommit := mustGit(t, changed.Path, "rev-parse", "HEAD")
+	if err = e.Merge(m, "feat: repository histories"); err != nil {
+		t.Fatal(err)
+	}
+	hookCommit := changed.Source
+
+	wantRoot := "feat: repository histories\n\nCommits:\n- " + abbreviated(t, root.Origin, rootSource) + " feat: root source"
+	wantChild := strings.Join([]string{
+		"feat: repository histories",
+		"",
+		"Commits:",
+		"- " + abbreviated(t, changed.Origin, hookCommit) + " chore: merge hook",
+		"- " + abbreviated(t, changed.Origin, refreshCommit) + " chore(vcm): refresh " + m.Tag,
+		"- " + abbreviated(t, changed.Origin, childSource) + " feat: child source",
+	}, "\n")
+	if got := mustGit(t, root.Origin, "log", "-1", "--format=%B"); got != wantRoot {
+		t.Fatalf("root commit message:\n%q\nwant:\n%q", got, wantRoot)
+	}
+	if got := mustGit(t, changed.Origin, "log", "-1", "--format=%B"); got != wantChild {
+		t.Fatalf("child commit message:\n%q\nwant:\n%q", got, wantChild)
+	}
+	if got := mustGit(t, m.Repositories[2].Origin, "rev-parse", "HEAD"); got != unchangedBefore {
+		t.Fatalf("unchanged repository gained commit %s, want %s", got, unchangedBefore)
+	}
+	for _, omitted := range []string{"private root body", "child body must be omitted", "hook body must be omitted", "Hidden Author", "hidden@example.test", trunkCommit, "feat: update trunk.txt"} {
+		if strings.Contains(wantRoot, omitted) || strings.Contains(wantChild, omitted) {
+			t.Fatalf("commit metadata or target history leaked into squash message: %q", omitted)
 		}
 	}
 }
@@ -1195,7 +1277,9 @@ func TestMergeRecoversPreparedIndex(t *testing.T) {
 	r.Source = mustGit(t, r.Path, "rev-parse", "HEAD")
 	r.TargetBefore = mustGit(t, r.Origin, "rev-parse", "HEAD")
 	r.MergeTree = mustGit(t, r.Origin, "merge-tree", "--write-tree", r.TargetBefore, r.Source)
-	r.MergeCommit = mustGit(t, r.Origin, "commit-tree", r.MergeTree, "-p", r.TargetBefore, "-m", "feat: interrupted merge")
+	m.MergeMessage = "feat: test change"
+	wantMessage := "feat: test change\n\nCommits:\n- " + abbreviated(t, r.Origin, r.Source) + " feat: update feature.txt"
+	r.MergeCommit = mustGit(t, r.Origin, "commit-tree", r.MergeTree, "-p", r.TargetBefore, "-m", wantMessage)
 	r.Intent = "merge"
 	m.State = "merging"
 	if err = e.store.save(m); err != nil {
@@ -1211,6 +1295,9 @@ func TestMergeRecoversPreparedIndex(t *testing.T) {
 	}
 	if got := mustGit(t, r.Origin, "rev-parse", "HEAD"); got != r.MergeCommit {
 		t.Fatal("did not reconcile exact intended commit")
+	}
+	if got := mustGit(t, r.Origin, "log", "-1", "--format=%B"); got != wantMessage {
+		t.Fatalf("prepared commit message changed on retry:\n%q\nwant:\n%q", got, wantMessage)
 	}
 }
 func TestMergeCompatibleAdvancedTrunkAndUnchanged(t *testing.T) {

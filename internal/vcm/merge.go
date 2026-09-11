@@ -17,6 +17,30 @@ func ValidateMergeMessage(message string) error {
 	return nil
 }
 
+func squashCommitMessage(path, subject, source, target string) (string, error) {
+	history, err := gitRaw(path, "log", "--topo-order", "--abbrev=7", "--format=%h%x00%s", source, "--not", target)
+	if err != nil {
+		return "", err
+	}
+	var message strings.Builder
+	message.WriteString(subject)
+	message.WriteString("\n\nCommits:")
+	for _, entry := range strings.Split(strings.TrimSuffix(history, "\n"), "\n") {
+		if entry == "" {
+			continue
+		}
+		parts := strings.SplitN(entry, "\x00", 2)
+		if len(parts) != 2 {
+			return "", fmt.Errorf("unexpected Git history entry")
+		}
+		message.WriteString("\n- ")
+		message.WriteString(parts[0])
+		message.WriteByte(' ')
+		message.WriteString(parts[1])
+	}
+	return message.String(), nil
+}
+
 func (e *Engine) Drop(m *Manifest) error {
 	if err := e.ensureCurrentSelection(m); err != nil {
 		return err
@@ -502,7 +526,10 @@ func (e *Engine) freezeMerge(m *Manifest) error {
 			unchanged = append(unchanged, r)
 			continue
 		}
-		message := m.MergeMessage + "\n\nVCM-Change: " + m.Tag
+		message, err := squashCommitMessage(r.Origin, m.MergeMessage, source, target)
+		if err != nil {
+			return fmt.Errorf("repository %s commit history: %w", r.Repository.Name, err)
+		}
 		commit, err := git(r.Origin, "commit-tree", tree, "-p", target, "-m", message)
 		if err != nil {
 			return err
