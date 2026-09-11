@@ -141,12 +141,14 @@ type versionResult struct {
 }
 
 type dryRunResult struct {
-	Command   string   `json:"command"`
-	DryRun    bool     `json:"dry_run"`
-	Force     bool     `json:"force"`
-	Tag       string   `json:"tag,omitempty"`
-	Workspace string   `json:"workspace,omitempty"`
-	Resources []string `json:"resources"`
+	Command           string   `json:"command"`
+	DryRun            bool     `json:"dry_run"`
+	Force             bool     `json:"force"`
+	SkippedHookPhases []string `json:"skipped_hook_phases"`
+	SkipGitHooks      bool     `json:"skip_git_hooks"`
+	Tag               string   `json:"tag,omitempty"`
+	Workspace         string   `json:"workspace,omitempty"`
+	Resources         []string `json:"resources"`
 }
 
 type errorResult struct {
@@ -282,7 +284,7 @@ func newDropResult(m *vcm.Manifest) dropResult {
 }
 
 func newDryRunResult(plan vcm.OperationPlan) dryRunResult {
-	return dryRunResult{Command: plan.Command, DryRun: plan.DryRun, Force: plan.Force, Tag: plan.Tag, Workspace: plan.Workspace, Resources: append([]string{}, plan.Resources...)}
+	return dryRunResult{Command: plan.Command, DryRun: plan.DryRun, Force: plan.Force, SkippedHookPhases: append([]string{}, plan.SkippedHookPhases...), SkipGitHooks: plan.SkipGitHooks, Tag: plan.Tag, Workspace: plan.Workspace, Resources: append([]string{}, plan.Resources...)}
 }
 
 func renderJSON(out io.Writer, result any) error {
@@ -478,8 +480,12 @@ func renderHuman(out io.Writer, result any) error {
 		if _, err := fmt.Fprintf(out, "Dry run: %s\n", value.Command); err != nil {
 			return err
 		}
-		if value.Command == "sync" || value.Command == "drop" {
+		if value.Command == "sync" || value.Command == "merge" || value.Command == "drop" {
 			fmt.Fprintf(out, "Force: %t\n", value.Force)
+		}
+		if value.Command == "merge" {
+			fmt.Fprintf(out, "Skipped hook phases: %s\n", strings.Join(value.SkippedHookPhases, ","))
+			fmt.Fprintf(out, "Git hooks suppressed: %t\n", value.SkipGitHooks)
 		}
 		if value.Tag != "" {
 			fmt.Fprintf(out, "Change: %s\n", value.Tag)

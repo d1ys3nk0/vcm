@@ -13,11 +13,12 @@ func (e *Engine) logOperation(operation, repository, path, format string, args .
 	fmt.Fprintf(e.Out, "[%s/%s @ %s] %s\n", operation, repository, path, fmt.Sprintf(format, args...))
 }
 
-func (e *Engine) logHook(repository, phase, id, path, message string) {
+func (e *Engine) logHook(repository, phase, id, path, message string) error {
 	if e.Out == nil {
-		return
+		return nil
 	}
-	fmt.Fprintf(e.Out, "[hook/%s/%s/%s @ %s] %s\n", repository, phase, id, path, message)
+	_, err := fmt.Fprintf(e.Out, "[hook/%s/%s/%s @ %s] %s\n", repository, phase, id, path, message)
+	return err
 }
 
 func abbreviateRevision(revision string) string {

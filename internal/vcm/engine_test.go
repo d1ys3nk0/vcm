@@ -2,7 +2,9 @@ package vcm
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
+	"errors"
 	"fmt"
 	"go.yaml.in/yaml/v3"
 	"io"
@@ -12,6 +14,16 @@ import (
 	"strings"
 	"testing"
 )
+
+type failAfterOneWrite struct{ writes int }
+
+func (w *failAfterOneWrite) Write(p []byte) (int, error) {
+	w.writes++
+	if w.writes > 1 {
+		return 0, errors.New("test output failure")
+	}
+	return len(p), nil
+}
 
 func mustGit(t *testing.T, path string, args ...string) string {
 	t.Helper()
@@ -188,9 +200,6 @@ func TestMergeMessageContract(t *testing.T) {
 	for i := range m.Repositories {
 		commitFile(t, m.Repositories[i].Path, "changed.txt", "changed\n")
 	}
-	if err = e.Merge(m); err == nil || !strings.Contains(err.Error(), "--message") {
-		t.Fatalf("fresh merge accepted no message: %v", err)
-	}
 	if err = e.Merge(m, "not conventional"); err == nil {
 		t.Fatal("fresh merge accepted invalid message")
 	}
@@ -222,6 +231,356 @@ func TestMergeMessageContract(t *testing.T) {
 		if !strings.Contains(body, "feat: shared subject") || !strings.Contains(body, "VCM-Change: "+m.Tag) {
 			t.Fatalf("repository %s commit message: %q", r.Repository.Name, body)
 		}
+	}
+}
+
+func TestMergeDefaultMessageAcrossChangedRepositories(t *testing.T) {
+	e := fixture(t, 2)
+	m, err := e.Create("default-message")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range m.Repositories {
+		commitFile(t, m.Repositories[i].Path, "default.txt", "changed\n")
+	}
+	if err = e.Merge(m); err != nil {
+		t.Fatal(err)
+	}
+	if m.MergeMessage != "feat: default-message" {
+		t.Fatalf("default message not persisted: %q", m.MergeMessage)
+	}
+	for _, repository := range m.Repositories {
+		body := mustGit(t, repository.Origin, "log", "-1", "--format=%B")
+		if !strings.Contains(body, "feat: default-message") || !strings.Contains(body, "VCM-Change: "+m.Tag) {
+			t.Fatalf("repository %s commit message: %q", repository.Repository.Name, body)
+		}
+	}
+}
+
+func TestMergeForceIgnoresOnlyCleanHookCommandFailures(t *testing.T) {
+	e := fixture(t, 1)
+	log := filepath.Join(filepath.Dir(e.Root), "merge-force-events")
+	t.Setenv("VCM_TEST_EVENTS", log)
+	e.Config.Root.Hooks = Hooks{HookMergeBefore: {
+		{ID: "commit-then-fail", Shell: `printf 'forced output\n' > forced.txt; git add forced.txt; git commit -m 'chore: forced hook output'; printf 'failed\n' >> "$VCM_TEST_EVENTS"; false`},
+		{ID: "continue", Shell: `printf 'continued\n' >> "$VCM_TEST_EVENTS"`},
+	}}
+	saveContractConfig(t, e)
+	m, err := e.Create("force-clean-failure")
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.MergeForce = true
+	if err = e.Merge(m); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(log)
+	if err != nil || string(data) != "failed\ncontinued\n" {
+		t.Fatalf("later hook did not run: %q %v", data, err)
+	}
+	failed := m.Hooks["root/merge-before/commit-then-fail"]
+	if failed.Status != "failed" || failed.Error == "" {
+		t.Fatalf("ignored failure not persisted: %+v", failed)
+	}
+	if _, err = os.Stat(filepath.Join(e.Root, "forced.txt")); err != nil {
+		t.Fatal("committed hook output was not integrated:", err)
+	}
+	if len(m.Backups) != 0 {
+		t.Fatalf("merge force created destructive cleanup backups: %v", m.Backups)
+	}
+}
+
+func TestMergeForceKeepsDirtyHookFailureFatal(t *testing.T) {
+	e := fixture(t, 0)
+	e.Config.Root.Hooks = Hooks{HookMergeBefore: {{ID: "dirty", Shell: `printf 'dirty\n' > dirty.txt; false`}}}
+	saveContractConfig(t, e)
+	m, err := e.Create("force-dirty-failure")
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.MergeForce = true
+	if err = e.Merge(m); err == nil || !strings.Contains(err.Error(), "dirty checkout") {
+		t.Fatalf("force ignored dirty hook failure: %v", err)
+	}
+	if _, err = os.Stat(m.Workspace); err != nil {
+		t.Fatal("dirty workspace was removed:", err)
+	}
+}
+
+func TestMergeForceKeepsRunnerAndRevisionFailuresFatal(t *testing.T) {
+	t.Run("configuration", func(t *testing.T) {
+		e := fixture(t, 0)
+		e.Config.Root.Hooks = Hooks{HookMergeBefore: {{ID: "retry", Shell: "false"}}}
+		saveContractConfig(t, e)
+		m, err := e.Create("force-config-failure")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = e.Merge(m); err == nil {
+			t.Fatal("expected initial hook failure")
+		}
+		put(t, filepath.Join(e.Root, "vcm.yml"), "not: [valid")
+		e.MergeForce = true
+		if err = e.Merge(m); err == nil || !strings.Contains(err.Error(), "read current hook configuration") {
+			t.Fatalf("force ignored hook configuration failure: %v", err)
+		}
+	})
+	t.Run("runner start", func(t *testing.T) {
+		e := fixture(t, 0)
+		e.Config.Runners.Shell = filepath.Join(t.TempDir(), "missing-shell")
+		e.Config.Root.Hooks = Hooks{HookMergeBefore: {{ID: "missing-runner", Shell: "false"}}}
+		saveContractConfig(t, e)
+		m, err := e.Create("force-runner-failure")
+		if err != nil {
+			t.Fatal(err)
+		}
+		e.MergeForce = true
+		if err = e.Merge(m); err == nil || !strings.Contains(err.Error(), "missing-shell") {
+			t.Fatalf("force ignored runner start failure: %v", err)
+		}
+	})
+	t.Run("hook output", func(t *testing.T) {
+		e := fixture(t, 0)
+		e.Config.Root.Hooks = Hooks{HookMergeBefore: {{ID: "output", Shell: "printf 'output\\n'; false"}}}
+		saveContractConfig(t, e)
+		m, err := e.Create("force-output-failure")
+		if err != nil {
+			t.Fatal(err)
+		}
+		e.Out = &failAfterOneWrite{}
+		e.MergeForce = true
+		if err = e.Merge(m); err == nil || !strings.Contains(err.Error(), "output") {
+			t.Fatalf("force ignored hook output failure: %v", err)
+		}
+	})
+	t.Run("target drift", func(t *testing.T) {
+		e := fixture(t, 0)
+		m, err := e.Create("force-target-drift")
+		if err != nil {
+			t.Fatal(err)
+		}
+		commitFile(t, e.Root, "drift.txt", "drift\n")
+		e.MergeForce = true
+		if err = e.Merge(m); err == nil || !strings.Contains(err.Error(), "target advanced") {
+			t.Fatalf("force ignored target drift: %v", err)
+		}
+	})
+}
+
+func TestMergeSkipHooksIsSelectiveAndDoesNotPersistStatus(t *testing.T) {
+	e := fixture(t, 0)
+	log := filepath.Join(filepath.Dir(e.Root), "skip-events")
+	t.Setenv("VCM_TEST_EVENTS", log)
+	e.Config.Root.Hooks = Hooks{
+		HookMergeBefore: {{ID: "before", Shell: `printf 'before\n' >> "$VCM_TEST_EVENTS"`}},
+		HookMergeAfter:  {{ID: "after", Shell: `printf 'after\n' >> "$VCM_TEST_EVENTS"`}},
+	}
+	saveContractConfig(t, e)
+	m, err := e.Create("selective-skip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.SkipMergeHooks = map[string]bool{HookMergeBefore: true}
+	if err = e.Merge(m); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(log)
+	if err != nil || string(data) != "after\n" {
+		t.Fatalf("selective skip output: %q %v", data, err)
+	}
+	if _, exists := m.Hooks["root/merge-before/before"]; exists {
+		t.Fatal("skipped hook outcome was persisted")
+	}
+}
+
+func TestMergeSkipHooksAfterAndBothExecuteExpectedPhases(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		skipped    map[string]bool
+		wantEvents string
+		wantRun    []string
+		wantSkip   []string
+	}{
+		{name: "after only", skipped: map[string]bool{HookMergeAfter: true}, wantEvents: "before\n", wantRun: []string{HookMergeBefore}, wantSkip: []string{HookMergeAfter}},
+		{name: "both", skipped: map[string]bool{HookMergeBefore: true, HookMergeAfter: true}, wantSkip: []string{HookMergeBefore, HookMergeAfter}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			e := fixture(t, 0)
+			var output bytes.Buffer
+			e.Out = &output
+			events := filepath.Join(filepath.Dir(e.Root), "skip-execution-events")
+			t.Setenv("VCM_TEST_EVENTS", events)
+			e.Config.Root.Hooks = Hooks{
+				HookMergeBefore: {{ID: "before", Shell: `printf 'before\n' >> "$VCM_TEST_EVENTS"`}},
+				HookMergeAfter:  {{ID: "after", Shell: `printf 'after\n' >> "$VCM_TEST_EVENTS"`}},
+			}
+			saveContractConfig(t, e)
+			m, err := e.Create("skip-" + strings.ReplaceAll(test.name, " ", "-"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			output.Reset()
+			e.SkipMergeHooks = test.skipped
+			if err = e.Merge(m); err != nil {
+				t.Fatal(err)
+			}
+			data, readErr := os.ReadFile(events)
+			if test.wantEvents == "" && os.IsNotExist(readErr) {
+				data, readErr = nil, nil
+			}
+			if readErr != nil || string(data) != test.wantEvents {
+				t.Fatalf("hook events = %q, want %q: %v", data, test.wantEvents, readErr)
+			}
+			for _, phase := range test.wantRun {
+				id := strings.TrimPrefix(phase, "merge-")
+				if outcome := m.Hooks["root/"+phase+"/"+id]; outcome.Status != "complete" {
+					t.Fatalf("executed hook %s outcome: %+v", phase, outcome)
+				}
+			}
+			for _, phase := range test.wantSkip {
+				id := strings.TrimPrefix(phase, "merge-")
+				if _, exists := m.Hooks["root/"+phase+"/"+id]; exists {
+					t.Fatalf("skipped hook %s persisted an outcome", phase)
+				}
+				if !strings.Contains(output.String(), "/"+phase+"/"+id+" @") || !strings.Contains(output.String(), "skipped by --skip-hooks") {
+					t.Fatalf("skipped hook %s was not logged:\n%s", phase, output.String())
+				}
+			}
+		})
+	}
+}
+
+func TestMergeFailedHookRetriesUnlessPhaseSkipped(t *testing.T) {
+	e := fixture(t, 0)
+	count := filepath.Join(filepath.Dir(e.Root), "retry-count")
+	allow := filepath.Join(filepath.Dir(e.Root), "retry-allow")
+	t.Setenv("VCM_TEST_COUNT", count)
+	t.Setenv("VCM_TEST_ALLOW", allow)
+	e.Config.Root.Hooks = Hooks{HookMergeBefore: {{ID: "retry", Shell: `printf 'run\n' >> "$VCM_TEST_COUNT"; test -f "$VCM_TEST_ALLOW"`}}}
+	saveContractConfig(t, e)
+	m, err := e.Create("failed-retry")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = e.Merge(m); err == nil {
+		t.Fatal("expected initial hook failure")
+	}
+	put(t, allow, "yes")
+	if err = e.Merge(m); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(count)
+	if err != nil || string(data) != "run\nrun\n" {
+		t.Fatalf("failed hook was not retried: %q %v", data, err)
+	}
+}
+
+func TestMergeSkipGitHooksAppliesOnlyInsideLifecycleHook(t *testing.T) {
+	for _, suppress := range []bool{false, true} {
+		t.Run(fmt.Sprintf("suppress-%t", suppress), func(t *testing.T) {
+			if suppress {
+				t.Setenv("GIT_CONFIG_COUNT", "1")
+				t.Setenv("GIT_CONFIG_KEY_0", "user.name")
+				t.Setenv("GIT_CONFIG_VALUE_0", "Inherited Hook User")
+			}
+			e := fixture(t, 0)
+			hooksDir := filepath.Join(filepath.Dir(e.Root), "reject-hooks")
+			if err := os.MkdirAll(hooksDir, 0755); err != nil {
+				t.Fatal(err)
+			}
+			preCommit := filepath.Join(hooksDir, "pre-commit")
+			put(t, preCommit, "#!/bin/sh\nexit 1\n")
+			if err := os.Chmod(preCommit, 0755); err != nil {
+				t.Fatal(err)
+			}
+			hook := `printf 'hook commit\n' > hook-commit.txt; git add hook-commit.txt; git commit -m 'chore: hook commit'`
+			if suppress {
+				hook = `test "$(git config --get user.name)" = "Inherited Hook User"; ` + hook
+			}
+			e.Config.Root.Hooks = Hooks{HookMergeBefore: {{ID: "commit", Shell: hook}}}
+			saveContractConfig(t, e)
+			mustGit(t, e.Root, "config", "core.hooksPath", hooksDir)
+			m, err := e.Create("git-hook-policy")
+			if err != nil {
+				t.Fatal(err)
+			}
+			e.SkipGitHooks = suppress
+			err = e.Merge(m)
+			if !suppress {
+				if err == nil || !strings.Contains(err.Error(), "dirty checkout") {
+					t.Fatalf("configured Git hook did not block lifecycle commit: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = os.Stat(filepath.Join(e.Root, "hook-commit.txt")); err != nil {
+				t.Fatal("suppressed Git hook commit was not integrated:", err)
+			}
+		})
+	}
+}
+
+func TestMergeSkipGitHooksRejectsMalformedInheritedConfig(t *testing.T) {
+	_, err := suppressGitHooks([]string{"PATH=/bin", "GIT_CONFIG_COUNT=invalid"})
+	if err == nil || !strings.Contains(err.Error(), `invalid GIT_CONFIG_COUNT "invalid"`) {
+		t.Fatalf("malformed inherited Git configuration was not rejected: %v", err)
+	}
+}
+
+func TestMergeForcePreservesOwnershipConflictAndIncompleteLifecycleSafety(t *testing.T) {
+	t.Run("ownership", func(t *testing.T) {
+		e := fixture(t, 0)
+		m, err := e.Create("force-ownership")
+		if err != nil {
+			t.Fatal(err)
+		}
+		ownedPath := m.Repositories[0].Path
+		m.Repositories[0].Path = filepath.Join(filepath.Dir(ownedPath), "wrong-workspace")
+		e.MergeForce = true
+		if err = e.Merge(m); err == nil || !strings.Contains(err.Error(), "ownership paths mismatch") {
+			t.Fatalf("force ignored ownership failure: %v", err)
+		}
+		if _, err = os.Stat(ownedPath); err != nil {
+			t.Fatal("owned workspace was removed:", err)
+		}
+	})
+	t.Run("conflict", func(t *testing.T) {
+		e := fixture(t, 0)
+		commonBase := mustGit(t, e.Root, "rev-parse", "HEAD")
+		commitFile(t, e.Root, "conflict.txt", "target\n")
+		mustGit(t, e.Root, "push", "origin", "main")
+		m, err := e.Create("force-conflict")
+		if err != nil {
+			t.Fatal(err)
+		}
+		mustGit(t, m.Workspace, "reset", "--hard", commonBase)
+		commitFile(t, m.Workspace, "conflict.txt", "source\n")
+		e.MergeForce = true
+		if err = e.Merge(m); err == nil || !strings.Contains(err.Error(), "conflict after merge gate") {
+			t.Fatalf("force ignored merge conflict: %v", err)
+		}
+		if _, err = os.Stat(m.Workspace); err != nil {
+			t.Fatal("conflicting workspace was removed:", err)
+		}
+	})
+	for _, state := range []string{"creating", "refreshing", "dropping"} {
+		t.Run(state, func(t *testing.T) {
+			e := fixture(t, 0)
+			m, err := e.Create("force-incomplete-" + state)
+			if err != nil {
+				t.Fatal(err)
+			}
+			m.State = state
+			e.MergeForce = true
+			if err = e.Merge(m); err == nil || !strings.Contains(strings.ToLower(err.Error()), strings.TrimSuffix(state, "ing")) {
+				t.Fatalf("force accepted incomplete %s lifecycle: %v", state, err)
+			}
+			if _, err = os.Stat(m.Workspace); err != nil {
+				t.Fatal("incomplete workspace was removed:", err)
+			}
+		})
 	}
 }
 

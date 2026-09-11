@@ -30,7 +30,7 @@ Commands:
   list                 List recorded Changes.
   status [change]      Show a Change's lifecycle, hooks, merge, and recovery state.
   refresh [change]     Merge advanced local trunks into a ready Change; rerun verification.
-  merge [change]       Gate and squash-merge with a required Conventional Commit subject.
+  merge [change]       Gate and squash-merge with a Conventional Commit subject.
   drop [change]        Remove the resources owned by a completed or discarded Change.
   prune                Interactively clean retained checkouts and remove unexpected Git resources.
   version              Print the VCM version and source commit.
@@ -41,11 +41,14 @@ Global options:
   --json               Emit machine-readable JSON to stdout.
   --dry-run            Show the operation plan without changing files or running hooks.
                        Supported by bootstrap, sync, create, refresh, merge, drop, and prune.
-  --force              For sync, reset divergent child trunks after creating recovery backups.
-                       For drop, preserve recovery backups before discarding changes.
+  -f, --force          For merge, ignore clean lifecycle hook command failures. For sync,
+                       reset divergent child trunks after creating recovery backups. For drop,
+                       preserve recovery backups before discarding changes.
   --only NAMES         For create, include exactly these comma-separated child repositories.
   --except NAMES       For create, exclude these comma-separated child repositories.
-  --message SUBJECT    Required for a fresh merge, including --dry-run.
+  --message SUBJECT    Merge commit subject; defaults to "feat: <manifest slug>".
+  --skip-hooks PHASES  For merge, skip exact comma-separated merge-before and/or merge-after phases.
+  --skip-git-hooks     For merge lifecycle hooks, run Git with core.hooksPath=/dev/null.
   -h, --help           Show this help.
 
 Change selection:
@@ -64,7 +67,7 @@ Examples:
   vcm prune --dry-run
   vcm prune
   vcm refresh 260910120000-improve-search
-  vcm merge --dry-run --message 'feat: improve search'
+  vcm merge --dry-run --force --skip-hooks merge-after --skip-git-hooks
   vcm drop 260910120000-improve-search --force
 
 Notes:
@@ -89,22 +92,25 @@ func run(args []string) error {
 	flags := flag.NewFlagSet("vcm", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	flags.Usage = func() {}
-	workspace, only, except, message := "", "", "", ""
-	jsonOutput, dry, force := false, false, false
+	workspace, only, except, message, skipHooks := "", "", "", "", ""
+	jsonOutput, dry, force, skipGitHooks := false, false, false, false
 	flags.StringVar(&workspace, "workspace", "", "workspace root")
 	flags.BoolVar(&jsonOutput, "json", false, "machine-readable output")
 	flags.BoolVar(&dry, "dry-run", false, "show operation plan")
 	flags.BoolVar(&force, "force", false, "preserve recovery backups and discard changes")
+	flags.BoolVar(&force, "f", false, "force the selected operation")
 	flags.StringVar(&only, "only", "", "selected child repositories")
 	flags.StringVar(&except, "except", "", "excluded child repositories")
 	flags.StringVar(&message, "message", "", "merge commit subject")
+	flags.StringVar(&skipHooks, "skip-hooks", "", "merge hook phases to skip")
+	flags.BoolVar(&skipGitHooks, "skip-git-hooks", false, "suppress Git hooks inside merge lifecycle hooks")
 	// Permit global options before or after the command using the standard flag parser.
 	options := []string{}
 	positionals := []string{}
 	for i := 0; i < len(args); i++ {
 		if strings.HasPrefix(args[i], "-") {
 			options = append(options, args[i])
-			if args[i] == "--workspace" || args[i] == "-workspace" || args[i] == "--only" || args[i] == "-only" || args[i] == "--except" || args[i] == "-except" || args[i] == "--message" || args[i] == "-message" {
+			if args[i] == "--workspace" || args[i] == "-workspace" || args[i] == "--only" || args[i] == "-only" || args[i] == "--except" || args[i] == "-except" || args[i] == "--message" || args[i] == "-message" || args[i] == "--skip-hooks" || args[i] == "-skip-hooks" {
 				i++
 				if i == len(args) {
 					return fmt.Errorf("%s requires a value", options[len(options)-1])
@@ -139,11 +145,12 @@ func run(args []string) error {
 	if command != "create" && command != "refresh" && command != "merge" && command != "drop" && command != "status" && len(positionals) > 1 {
 		return fmt.Errorf("%s takes no arguments", command)
 	}
-	if force && command != "sync" && command != "drop" {
-		return fmt.Errorf("--force is only supported by sync and drop")
-	}
 	selectionFlags := map[string]bool{}
 	flags.Visit(func(f *flag.Flag) { selectionFlags[f.Name] = true })
+	forceSet := selectionFlags["force"] || selectionFlags["f"]
+	if forceSet && command != "sync" && command != "merge" && command != "drop" {
+		return fmt.Errorf("--force is only supported by sync, merge, and drop")
+	}
 	if (selectionFlags["only"] || selectionFlags["except"]) && command != "create" {
 		return fmt.Errorf("--only and --except are only supported by create")
 	}
@@ -152,6 +159,12 @@ func run(args []string) error {
 	}
 	if selectionFlags["message"] && command != "merge" {
 		return fmt.Errorf("--message is only supported by merge")
+	}
+	if selectionFlags["skip-hooks"] && command != "merge" {
+		return fmt.Errorf("--skip-hooks is only supported by merge")
+	}
+	if selectionFlags["skip-git-hooks"] && command != "merge" {
+		return fmt.Errorf("--skip-git-hooks is only supported by merge")
 	}
 	if selectionFlags["only"] && only == "" {
 		return fmt.Errorf("--only contains a blank repository name")
@@ -177,7 +190,16 @@ func run(args []string) error {
 		return err
 	}
 	engine.DryRun = dry
-	engine.Force = force
+	engine.Force = force && command != "merge"
+	engine.MergeForce = force && command == "merge"
+	engine.SkipGitHooks = skipGitHooks
+	if selectionFlags["skip-hooks"] {
+		phases, parseErr := parseMergeHookPhases(skipHooks)
+		if parseErr != nil {
+			return parseErr
+		}
+		engine.SkipMergeHooks = phases
+	}
 	arg := ""
 	if len(positionals) > 2 {
 		return fmt.Errorf("too many arguments")
@@ -240,9 +262,6 @@ func run(args []string) error {
 			}
 		}
 		if command == "merge" {
-			if m.MergeMessage == "" && message == "" {
-				return fmt.Errorf("fresh merge requires --message '<conventional subject>'")
-			}
 			if message != "" {
 				if err := vcm.ValidateMergeMessage(message); err != nil {
 					return err
@@ -329,6 +348,23 @@ func run(args []string) error {
 		}
 	}
 	return nil
+}
+
+func parseMergeHookPhases(value string) (map[string]bool, error) {
+	result := map[string]bool{}
+	for _, phase := range strings.Split(value, ",") {
+		if phase == "" || phase != strings.TrimSpace(phase) {
+			return nil, fmt.Errorf("--skip-hooks contains a blank or whitespace-padded phase")
+		}
+		if phase != vcm.HookMergeBefore && phase != vcm.HookMergeAfter {
+			return nil, fmt.Errorf("--skip-hooks contains unsupported phase %q", phase)
+		}
+		if result[phase] {
+			return nil, fmt.Errorf("--skip-hooks contains duplicate phase %s", phase)
+		}
+		result[phase] = true
+	}
+	return result, nil
 }
 
 func pruneActionPrompt(action string) string {

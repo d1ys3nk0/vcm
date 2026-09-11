@@ -207,12 +207,66 @@ func TestHelpDocumentsEveryCommandAndOption(t *testing.T) {
 	}
 	for _, phrase := range []string{
 		"validate", "bootstrap", "sync", "create <slug>", "list", "status [change]", "refresh [change]", "merge [change]", "drop [change]", "version",
-		"--workspace PATH", "--json", "--dry-run", "--force", "--only NAMES", "--except NAMES", "Change selection:", "Examples:",
+		"--workspace PATH", "--json", "--dry-run", "--force", "--only NAMES", "--except NAMES", "--skip-hooks PHASES", "--skip-git-hooks", "feat: <manifest slug>", "Change selection:", "Examples:",
 		"anywhere inside", "Outside a managed Change worktree, [change] is required",
 	} {
 		if !strings.Contains(output, phrase) {
 			t.Errorf("help is missing %q:\n%s", phrase, output)
 		}
+	}
+}
+
+func TestMergeOverrideFlagsValidationAndDryRun(t *testing.T) {
+	root, manifest := cliManagedChange(t)
+	result, err := runJSON[dryRunResult](t, "merge", manifest.Tag, "-f", "--skip-hooks", "merge-after,merge-before", "--skip-git-hooks", "--dry-run", "--json", "--workspace", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Force || !result.SkipGitHooks || strings.Join(result.SkippedHookPhases, ",") != "merge-before,merge-after" {
+		t.Fatalf("merge override dry-run omitted options: %+v", result)
+	}
+	human, err := runOutput(t, "merge", manifest.Tag, "--force", "--skip-hooks=merge-before", "--skip-git-hooks", "--dry-run", "--workspace", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Force: true", "Skipped hook phases: merge-before", "Git hooks suppressed: true"} {
+		if !strings.Contains(human, want) {
+			t.Fatalf("human dry-run missing %q:\n%s", want, human)
+		}
+	}
+	for name, args := range map[string][]string{
+		"blank":           {"merge", manifest.Tag, "--skip-hooks=", "--workspace", root},
+		"trailing":        {"merge", manifest.Tag, "--skip-hooks", "merge-before,", "--workspace", root},
+		"whitespace":      {"merge", manifest.Tag, "--skip-hooks", "merge-before, merge-after", "--workspace", root},
+		"duplicate":       {"merge", manifest.Tag, "--skip-hooks", "merge-before,merge-before", "--workspace", root},
+		"unsupported":     {"merge", manifest.Tag, "--skip-hooks", "create-after", "--workspace", root},
+		"placement":       {"status", manifest.Tag, "--skip-hooks", "merge-before", "--workspace", root},
+		"git-placement":   {"status", manifest.Tag, "--skip-git-hooks", "--workspace", root},
+		"force-placement": {"status", manifest.Tag, "-f", "--workspace", root},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := runOutput(t, args...); err == nil {
+				t.Fatal("invalid merge override accepted")
+			}
+		})
+	}
+}
+
+func TestCLIUsesDefaultMergeMessage(t *testing.T) {
+	root, manifest := cliManagedChange(t)
+	if _, err := runOutput(t, "merge", manifest.Tag, "--workspace", root); err != nil {
+		t.Fatal(err)
+	}
+	engine, err := vcm.Open(root, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := engine.Select(manifest.Tag, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.MergeMessage != "feat: context-selection" {
+		t.Fatalf("default message = %q", stored.MergeMessage)
 	}
 }
 

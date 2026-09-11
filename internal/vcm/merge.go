@@ -392,7 +392,17 @@ func (e *Engine) Plan(command string, m *Manifest) OperationPlan {
 			paths = append(paths, r.Path)
 		}
 	}
-	return OperationPlan{Command: command, DryRun: true, Force: e.Force, Tag: func() string {
+	skipped := []string{}
+	for _, phase := range []string{HookMergeBefore, HookMergeAfter} {
+		if e.SkipMergeHooks[phase] {
+			skipped = append(skipped, phase)
+		}
+	}
+	force := e.Force
+	if command == "merge" {
+		force = e.MergeForce
+	}
+	return OperationPlan{Command: command, DryRun: true, Force: force, SkippedHookPhases: skipped, SkipGitHooks: e.SkipGitHooks, Tag: func() string {
 		if m != nil {
 			return m.Tag
 		}
@@ -583,13 +593,23 @@ func (e *Engine) Merge(m *Manifest, messages ...string) error {
 	if len(messages) > 0 {
 		provided = messages[0]
 	}
-	if m.MergeMessage == "" {
-		if err := ValidateMergeMessage(provided); err != nil {
+	effective := m.MergeMessage
+	if effective == "" {
+		effective = provided
+		if effective == "" {
+			effective = "feat: " + m.Slug
+		}
+		if err := ValidateMergeMessage(effective); err != nil {
 			return err
 		}
-		m.MergeMessage = provided
 	} else if provided != "" && provided != m.MergeMessage {
 		return fmt.Errorf("merge already started with message %q; retries must reuse it", m.MergeMessage)
+	}
+	if m.MergeMessage == "" && (m.State == "merging" || m.State == "merge-finalizing") {
+		m.MergeMessage = effective
+		if err := e.store.save(m); err != nil {
+			return err
+		}
 	}
 	if m.State != "merging" && m.State != "merge-finalizing" {
 		if err := e.preflight(m); err != nil {
@@ -602,6 +622,7 @@ func (e *Engine) Merge(m *Manifest, messages ...string) error {
 			}
 			m.Repositories[i].Source = revision
 		}
+		m.MergeMessage = effective
 		m.State = "merging"
 		if err := e.store.save(m); err != nil {
 			return err

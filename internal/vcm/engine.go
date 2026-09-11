@@ -4,23 +4,28 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 )
 
 type Engine struct {
-	Root   string
-	Config Config
-	store  store
-	Out    io.Writer
-	Force  bool
-	DryRun bool
+	Root           string
+	Config         Config
+	store          store
+	Out            io.Writer
+	Force          bool
+	MergeForce     bool
+	SkipMergeHooks map[string]bool
+	SkipGitHooks   bool
+	DryRun         bool
 }
 
 type RepositoryStatus struct {
@@ -59,12 +64,14 @@ type StatusReport struct {
 }
 
 type OperationPlan struct {
-	Command   string
-	DryRun    bool
-	Force     bool
-	Tag       string
-	Workspace string
-	Resources []string
+	Command           string
+	DryRun            bool
+	Force             bool
+	SkippedHookPhases []string
+	SkipGitHooks      bool
+	Tag               string
+	Workspace         string
+	Resources         []string
 }
 
 func Open(path string, out io.Writer) (*Engine, error) {
@@ -655,6 +662,14 @@ func (e *Engine) hooksAt(m *Manifest, r *RepoState, phase, directory string, upd
 	if err != nil {
 		return err
 	}
+	if (phase == HookMergeBefore || phase == HookMergeAfter) && e.SkipMergeHooks[phase] {
+		for _, h := range hooks[phase] {
+			if err := e.logHook(r.Repository.Name, phase, h.ID, directory, "skipped by --skip-hooks"); err != nil {
+				return fmt.Errorf("repository %s phase %s hook %s diagnostic: %w", r.Repository.Name, phase, h.ID, err)
+			}
+		}
+		return nil
+	}
 	basePhase := directory == r.Origin
 	if !updateSource && basePhase {
 		expected := r.Target
@@ -687,6 +702,17 @@ func (e *Engine) hooksAt(m *Manifest, r *RepoState, phase, directory string, upd
 		if old.Status == "running" {
 			return fmt.Errorf("repository %s hook %s interrupted; inspect effects and use status to locate manifest; mark outcome failed to retry idempotently", r.Repository.Name, key)
 		}
+		selected := make([]string, 0, len(m.Repositories))
+		for _, repository := range m.Repositories {
+			selected = append(selected, repository.Repository.Name)
+		}
+		hookEnvironment := append(os.Environ(), "VCM_CHANGE_TAG="+m.Tag, "VCM_CHANGE_SLUG="+m.Slug, "VCM_ROOT="+m.Workspace, "VCM_ROOT_ORIGIN="+m.Origin, "VCM_SELECTED_REPOSITORIES="+strings.Join(selected, ","), "VCM_REPOSITORY_NAME="+r.Repository.Name, "VCM_REPOSITORY_ORIGIN="+r.Origin, "VCM_REPOSITORY_PATH="+r.Path, "VCM_HOOK_PHASE="+phase, "VCM_HOOK_ID="+h.ID)
+		if e.SkipGitHooks && (phase == HookMergeBefore || phase == HookMergeAfter) {
+			hookEnvironment, err = suppressGitHooks(hookEnvironment)
+			if err != nil {
+				return fmt.Errorf("repository %s phase %s hook %s Git configuration: %w", r.Repository.Name, phase, h.ID, err)
+			}
+		}
 		m.Hooks[key] = HookState{Status: "running"}
 		if err := e.store.save(m); err != nil {
 			return err
@@ -698,52 +724,128 @@ func (e *Engine) hooksAt(m *Manifest, r *RepoState, phase, directory string, upd
 			cmd = exec.CommandContext(context.Background(), current.Runners.Python, "-c", h.Python)
 		}
 		cmd.Dir = directory
-		selected := make([]string, 0, len(m.Repositories))
-		for _, repository := range m.Repositories {
-			selected = append(selected, repository.Repository.Name)
-		}
-		cmd.Env = append(os.Environ(), "VCM_CHANGE_TAG="+m.Tag, "VCM_CHANGE_SLUG="+m.Slug, "VCM_ROOT="+m.Workspace, "VCM_ROOT_ORIGIN="+m.Origin, "VCM_SELECTED_REPOSITORIES="+strings.Join(selected, ","), "VCM_REPOSITORY_NAME="+r.Repository.Name, "VCM_REPOSITORY_ORIGIN="+r.Origin, "VCM_REPOSITORY_PATH="+r.Path, "VCM_HOOK_PHASE="+phase, "VCM_HOOK_ID="+h.ID)
+		cmd.Env = hookEnvironment
 		prefix := fmt.Sprintf("[hook/%s/%s/%s @ %s] ", r.Repository.Name, phase, h.ID, directory)
 		hookOutput := newPrefixedLineWriter(e.Out, prefix)
 		cmd.Stdout = hookOutput
 		cmd.Stderr = hookOutput
-		e.logHook(r.Repository.Name, phase, h.ID, directory, "started")
-		err := cmd.Run()
-		if flushErr := hookOutput.Flush(); err == nil {
-			err = flushErr
+		if err := e.logHook(r.Repository.Name, phase, h.ID, directory, "started"); err != nil {
+			return fmt.Errorf("repository %s phase %s hook %s diagnostic: %w", r.Repository.Name, phase, h.ID, err)
 		}
-		if err == nil {
-			err = clean(directory)
-		}
-		if err != nil {
-			m.Hooks[key] = HookState{Status: "failed", Error: err.Error()}
+		processErr := cmd.Run()
+		if flushErr := hookOutput.Flush(); flushErr != nil {
+			m.Hooks[key] = HookState{Status: "failed", Error: flushErr.Error()}
 			if saveErr := e.store.save(m); saveErr != nil {
 				return saveErr
 			}
-			return fmt.Errorf("repository %s phase %s hook %s: %w; repair preserved checkout and retry", r.Repository.Name, phase, h.ID, err)
+			return fmt.Errorf("repository %s phase %s hook %s output: %w", r.Repository.Name, phase, h.ID, flushErr)
 		}
-		if updateSource {
-			revision, revErr := head(directory)
-			if revErr != nil {
-				return revErr
+		if cleanErr := clean(directory); cleanErr != nil {
+			detail := cleanErr.Error()
+			if processErr != nil {
+				detail = processErr.Error() + "; " + detail
 			}
-			r.Source = revision
-		} else if basePhase {
-			revision, revErr := head(directory)
-			if revErr != nil {
-				return revErr
+			m.Hooks[key] = HookState{Status: "failed", Error: detail}
+			if saveErr := e.store.save(m); saveErr != nil {
+				return saveErr
 			}
-			if phase == HookCreateBefore {
-				r.Base = revision
-			} else {
-				r.Target = revision
+			return fmt.Errorf("repository %s phase %s hook %s: %s; repair preserved checkout and retry", r.Repository.Name, phase, h.ID, detail)
+		}
+		if processErr != nil {
+			var exitErr *exec.ExitError
+			if e.MergeForce && (phase == HookMergeBefore || phase == HookMergeAfter) && errors.As(processErr, &exitErr) {
+				if revisionErr := e.recordHookRevision(r, phase, directory, updateSource, basePhase); revisionErr != nil {
+					return revisionErr
+				}
+				m.Hooks[key] = HookState{Status: "failed", Error: processErr.Error()}
+				if saveErr := e.store.save(m); saveErr != nil {
+					return saveErr
+				}
+				if logErr := e.logHook(r.Repository.Name, phase, h.ID, directory, fmt.Sprintf("failed (ignored by --force): %v", processErr)); logErr != nil {
+					return fmt.Errorf("repository %s phase %s hook %s diagnostic: %w", r.Repository.Name, phase, h.ID, logErr)
+				}
+				continue
 			}
+			m.Hooks[key] = HookState{Status: "failed", Error: processErr.Error()}
+			if saveErr := e.store.save(m); saveErr != nil {
+				return saveErr
+			}
+			return fmt.Errorf("repository %s phase %s hook %s: %w; repair preserved checkout and retry", r.Repository.Name, phase, h.ID, processErr)
+		}
+		if err = e.recordHookRevision(r, phase, directory, updateSource, basePhase); err != nil {
+			return err
 		}
 		m.Hooks[key] = HookState{Status: "complete"}
 		if err = e.store.save(m); err != nil {
 			return err
 		}
-		e.logHook(r.Repository.Name, phase, h.ID, directory, "completed")
+		if err = e.logHook(r.Repository.Name, phase, h.ID, directory, "completed"); err != nil {
+			return fmt.Errorf("repository %s phase %s hook %s diagnostic: %w", r.Repository.Name, phase, h.ID, err)
+		}
+	}
+	return nil
+}
+
+func suppressGitHooks(environment []string) ([]string, error) {
+	values := map[string][]string{}
+	for _, entry := range environment {
+		name, value, found := strings.Cut(entry, "=")
+		if found {
+			values[name] = append(values[name], value)
+		}
+	}
+	counts := values["GIT_CONFIG_COUNT"]
+	if len(counts) > 1 {
+		return nil, fmt.Errorf("GIT_CONFIG_COUNT is defined more than once")
+	}
+	count := 0
+	if len(counts) == 1 {
+		parsed, err := strconv.ParseUint(counts[0], 10, 31)
+		if err != nil {
+			return nil, fmt.Errorf("invalid GIT_CONFIG_COUNT %q", counts[0])
+		}
+		count = int(parsed)
+	}
+	if count > len(environment)/2 {
+		return nil, fmt.Errorf("GIT_CONFIG_COUNT %d exceeds the available configuration entries", count)
+	}
+	for i := 0; i < count; i++ {
+		keyName := fmt.Sprintf("GIT_CONFIG_KEY_%d", i)
+		valueName := fmt.Sprintf("GIT_CONFIG_VALUE_%d", i)
+		if len(values[keyName]) != 1 || values[keyName][0] == "" || len(values[valueName]) != 1 {
+			return nil, fmt.Errorf("GIT_CONFIG_COUNT entry %d must have exactly one nonblank key and one value", i)
+		}
+	}
+	nextKey := fmt.Sprintf("GIT_CONFIG_KEY_%d", count)
+	nextValue := fmt.Sprintf("GIT_CONFIG_VALUE_%d", count)
+	if len(values[nextKey]) > 0 || len(values[nextValue]) > 0 {
+		return nil, fmt.Errorf("Git configuration entry %d already exists outside GIT_CONFIG_COUNT", count)
+	}
+	result := make([]string, 0, len(environment)+2)
+	for _, entry := range environment {
+		name, _, _ := strings.Cut(entry, "=")
+		if name != "GIT_CONFIG_COUNT" {
+			result = append(result, entry)
+		}
+	}
+	result = append(result, fmt.Sprintf("GIT_CONFIG_COUNT=%d", count+1), nextKey+"=core.hooksPath", nextValue+"=/dev/null")
+	return result, nil
+}
+
+func (e *Engine) recordHookRevision(r *RepoState, phase, directory string, updateSource, basePhase bool) error {
+	if !updateSource && !basePhase {
+		return nil
+	}
+	revision, err := head(directory)
+	if err != nil {
+		return err
+	}
+	if updateSource {
+		r.Source = revision
+	} else if phase == HookCreateBefore {
+		r.Base = revision
+	} else {
+		r.Target = revision
 	}
 	return nil
 }
