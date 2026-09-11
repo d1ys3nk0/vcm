@@ -31,7 +31,7 @@ Commands:
   list                 List recorded Changes.
   status [change]      Show a Change's lifecycle, hooks, merge, and recovery state.
   refresh [change]     Merge advanced local trunks into a ready Change; rerun verification.
-  merge [change]       Gate and squash-merge with a Conventional Commit subject.
+  merge [change]       Gate, squash-merge, then remove the owned Change worktrees.
   drop [change]        Remove the resources owned by a completed or discarded Change.
   prune                Interactively clean retained checkouts and remove unexpected Git resources.
   version              Print the VCM version and source commit.
@@ -76,7 +76,8 @@ Examples:
 Notes:
   Flags may appear before or after the command. Slugs use lowercase kebab-case letters
   and digits. Commands that change state should be previewed with --dry-run; merge does
-  not fetch, pull, or push.
+  not fetch, pull, or push. After local integration is checkpointed, merge deletes ignored
+  content with the owned worktrees without requiring --force or creating recovery backups.
 `
 
 var stdinIsTerminal = func() bool {

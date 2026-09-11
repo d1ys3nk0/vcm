@@ -70,7 +70,7 @@ func (e *Engine) Drop(m *Manifest) error {
 		if err := e.checkDropTarget(r); err != nil {
 			return err
 		}
-		if err := e.cleanupSafety(m, r); err != nil {
+		if err := e.cleanupSafety("drop", m, r); err != nil {
 			return err
 		}
 		if !e.Force {
@@ -200,7 +200,7 @@ func (e *Engine) removeOne(operation string, m *Manifest, r *RepoState) error {
 		if err = e.owned(m, r); err != nil {
 			return err
 		}
-		if err = e.cleanupSafety(m, r); err != nil {
+		if err = e.cleanupSafety(operation, m, r); err != nil {
 			return err
 		}
 		if e.Force {
@@ -232,7 +232,7 @@ func (e *Engine) removeOne(operation string, m *Manifest, r *RepoState) error {
 			return err
 		}
 		args := []string{"worktree", "remove"}
-		if e.Force {
+		if e.Force || operation == "merge" {
 			args = append(args, "--force")
 		}
 		args = append(args, r.Path)
@@ -318,7 +318,7 @@ func originPathsCollide(origin, local, incoming string) bool {
 	return err == nil && os.SameFile(a, b)
 }
 
-func (e *Engine) cleanupSafety(m *Manifest, r *RepoState) error {
+func (e *Engine) cleanupSafety(operation string, m *Manifest, r *RepoState) error {
 	managed := map[string]bool{}
 	for _, other := range m.Repositories {
 		if other.Owned && !other.Removed && strings.HasPrefix(other.Path, r.Path+string(filepath.Separator)) {
@@ -349,7 +349,7 @@ func (e *Engine) cleanupSafety(m *Manifest, r *RepoState) error {
 	if err != nil {
 		return err
 	}
-	if !e.Force {
+	if operation != "merge" && !e.Force {
 		ignored, err := gitRaw(r.Path, "ls-files", "--others", "--ignored", "--exclude-standard", "-z")
 		if err != nil {
 			return err
@@ -426,7 +426,7 @@ func (e *Engine) Plan(command string, m *Manifest) OperationPlan {
 	if command == "merge" {
 		force = e.MergeForce
 	}
-	return OperationPlan{Command: command, DryRun: true, Force: force, SkippedHookPhases: skipped, SkipGitHooks: e.SkipGitHooks, Tag: func() string {
+	return OperationPlan{Command: command, DryRun: true, Force: force, DeletesIgnoredContent: command == "merge", SkippedHookPhases: skipped, SkipGitHooks: e.SkipGitHooks, Tag: func() string {
 		if m != nil {
 			return m.Tag
 		}

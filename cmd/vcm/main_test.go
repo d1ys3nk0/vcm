@@ -225,13 +225,25 @@ func TestMergeOverrideFlagsValidationAndDryRun(t *testing.T) {
 	if !result.Force || !result.SkipGitHooks || strings.Join(result.SkippedHookPhases, ",") != "merge-before,merge-after" {
 		t.Fatalf("merge override dry-run omitted options: %+v", result)
 	}
+	if !result.DeletesIgnoredContent {
+		t.Fatalf("merge dry-run omitted ignored-content deletion: %+v", result)
+	}
 	human, err := runOutput(t, "merge", manifest.Tag, "--force", "--skip-hooks=merge-before", "--skip-git-hooks", "--dry-run", "--workspace", root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Force: true", "Skipped hook phases: merge-before", "Git hooks suppressed: true"} {
+	for _, want := range []string{"Force: true", "Delete ignored content: true", "Skipped hook phases: merge-before", "Git hooks suppressed: true"} {
 		if !strings.Contains(human, want) {
 			t.Fatalf("human dry-run missing %q:\n%s", want, human)
+		}
+	}
+	for _, command := range []string{"refresh", "drop"} {
+		other, dryRunErr := runJSON[dryRunResult](t, command, manifest.Tag, "--dry-run", "--json", "--workspace", root)
+		if dryRunErr != nil {
+			t.Fatal(dryRunErr)
+		}
+		if other.DeletesIgnoredContent {
+			t.Fatalf("%s dry-run claims ignored-content deletion: %+v", command, other)
 		}
 	}
 	for name, args := range map[string][]string{
@@ -345,6 +357,9 @@ func TestDryRunCreatesNoResources(t *testing.T) {
 		}
 		if !result.DryRun {
 			t.Fatalf("not a dry-run result: %+v", result)
+		}
+		if result.DeletesIgnoredContent {
+			t.Fatalf("non-merge dry-run claims ignored-content deletion: %+v", result)
 		}
 		if path := result.Workspace; path != "" && path != root {
 			if _, err := os.Lstat(path); !os.IsNotExist(err) {

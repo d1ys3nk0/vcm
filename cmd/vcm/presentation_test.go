@@ -179,6 +179,13 @@ func TestDryRunHumanOutputShowsForceOnlyWhenApplicable(t *testing.T) {
 	if !strings.Contains(drop, "Force: true") {
 		t.Fatalf("drop omits force state:\n%s", drop)
 	}
+	if strings.Contains(drop, "Delete ignored content:") {
+		t.Fatalf("drop implies automatic ignored-content deletion:\n%s", drop)
+	}
+	merge := renderHumanForTest(t, dryRunResult{Command: "merge", DryRun: true, DeletesIgnoredContent: true, Resources: []string{"/change"}})
+	if !strings.Contains(merge, "Delete ignored content: true") {
+		t.Fatalf("merge omits ignored-content deletion:\n%s", merge)
+	}
 }
 
 func TestRefreshPresentationReportsInvalidVerification(t *testing.T) {

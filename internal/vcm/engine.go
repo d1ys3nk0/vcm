@@ -64,14 +64,15 @@ type StatusReport struct {
 }
 
 type OperationPlan struct {
-	Command           string
-	DryRun            bool
-	Force             bool
-	SkippedHookPhases []string
-	SkipGitHooks      bool
-	Tag               string
-	Workspace         string
-	Resources         []string
+	Command               string
+	DryRun                bool
+	Force                 bool
+	DeletesIgnoredContent bool
+	SkippedHookPhases     []string
+	SkipGitHooks          bool
+	Tag                   string
+	Workspace             string
+	Resources             []string
 }
 
 func Open(path string, out io.Writer) (*Engine, error) {

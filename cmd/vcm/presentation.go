@@ -141,14 +141,15 @@ type versionResult struct {
 }
 
 type dryRunResult struct {
-	Command           string   `json:"command"`
-	DryRun            bool     `json:"dry_run"`
-	Force             bool     `json:"force"`
-	SkippedHookPhases []string `json:"skipped_hook_phases"`
-	SkipGitHooks      bool     `json:"skip_git_hooks"`
-	Tag               string   `json:"tag,omitempty"`
-	Workspace         string   `json:"workspace,omitempty"`
-	Resources         []string `json:"resources"`
+	Command               string   `json:"command"`
+	DryRun                bool     `json:"dry_run"`
+	Force                 bool     `json:"force"`
+	DeletesIgnoredContent bool     `json:"deletes_ignored_content"`
+	SkippedHookPhases     []string `json:"skipped_hook_phases"`
+	SkipGitHooks          bool     `json:"skip_git_hooks"`
+	Tag                   string   `json:"tag,omitempty"`
+	Workspace             string   `json:"workspace,omitempty"`
+	Resources             []string `json:"resources"`
 }
 
 type errorResult struct {
@@ -284,7 +285,7 @@ func newDropResult(m *vcm.Manifest) dropResult {
 }
 
 func newDryRunResult(plan vcm.OperationPlan) dryRunResult {
-	return dryRunResult{Command: plan.Command, DryRun: plan.DryRun, Force: plan.Force, SkippedHookPhases: append([]string{}, plan.SkippedHookPhases...), SkipGitHooks: plan.SkipGitHooks, Tag: plan.Tag, Workspace: plan.Workspace, Resources: append([]string{}, plan.Resources...)}
+	return dryRunResult{Command: plan.Command, DryRun: plan.DryRun, Force: plan.Force, DeletesIgnoredContent: plan.DeletesIgnoredContent, SkippedHookPhases: append([]string{}, plan.SkippedHookPhases...), SkipGitHooks: plan.SkipGitHooks, Tag: plan.Tag, Workspace: plan.Workspace, Resources: append([]string{}, plan.Resources...)}
 }
 
 func renderJSON(out io.Writer, result any) error {
@@ -484,6 +485,7 @@ func renderHuman(out io.Writer, result any) error {
 			fmt.Fprintf(out, "Force: %t\n", value.Force)
 		}
 		if value.Command == "merge" {
+			fmt.Fprintf(out, "Delete ignored content: %t\n", value.DeletesIgnoredContent)
 			fmt.Fprintf(out, "Skipped hook phases: %s\n", strings.Join(value.SkippedHookPhases, ","))
 			fmt.Fprintf(out, "Git hooks suppressed: %t\n", value.SkipGitHooks)
 		}

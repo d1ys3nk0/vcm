@@ -372,6 +372,79 @@ func TestMergeForceIgnoresOnlyCleanHookCommandFailures(t *testing.T) {
 	}
 }
 
+func TestMergeRemovesIgnoredContentWithoutRecoveryBackups(t *testing.T) {
+	e := fixture(t, 1)
+	commitFile(t, e.Root, ".gitignore", "/repo0/\n/generated/\n")
+	mustGit(t, e.Root, "push", "origin", "main")
+	child := filepath.Join(e.Root, "repo0")
+	commitFile(t, child, ".gitignore", "generated/\n")
+	mustGit(t, child, "push", "origin", "main")
+	m, err := e.Create("ignored-cleanup")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, repository := range m.Repositories {
+		ignored := filepath.Join(repository.Path, "generated", "cache", "artifact")
+		if err = os.MkdirAll(filepath.Dir(ignored), 0755); err != nil {
+			t.Fatal(err)
+		}
+		put(t, ignored, "disposable\n")
+	}
+	if err = e.Merge(m); err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Backups) != 0 {
+		t.Fatalf("merge cleanup created recovery backups: %v", m.Backups)
+	}
+	for _, repository := range m.Repositories {
+		if _, err = os.Lstat(repository.Path); !os.IsNotExist(err) {
+			t.Fatalf("worktree with ignored content remains: %s", repository.Path)
+		}
+		if _, err = git(repository.Origin, "show-ref", "--verify", "refs/heads/"+m.Tag); err == nil {
+			t.Fatalf("Change branch remains for %s", repository.Repository.Name)
+		}
+	}
+}
+
+func TestMergeFinalizingRetryDeletesIgnoredContentAfterSafetyRepair(t *testing.T) {
+	e := fixture(t, 0)
+	commitFile(t, e.Root, ".gitignore", "generated/\nforeign/\n")
+	mustGit(t, e.Root, "push", "origin", "main")
+	m, err := e.Create("ignored-cleanup-retry")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ignored := filepath.Join(m.Workspace, "generated", "cache")
+	if err = os.MkdirAll(filepath.Dir(ignored), 0755); err != nil {
+		t.Fatal(err)
+	}
+	put(t, ignored, "disposable\n")
+	foreign := filepath.Join(m.Workspace, "foreign")
+	mustGit(t, m.Workspace, "init", foreign)
+	put(t, filepath.Join(foreign, "valuable"), "preserve\n")
+	if err = e.Merge(m); err == nil || !strings.Contains(err.Error(), "unrelated nested Git repository") {
+		t.Fatalf("foreign nested repository did not block cleanup: %v", err)
+	}
+	if m.State != "merge-finalizing" {
+		t.Fatalf("merge did not checkpoint integration before cleanup: %s", m.State)
+	}
+	if _, err = os.Stat(ignored); err != nil {
+		t.Fatal("ignored content was removed before cleanup safety passed:", err)
+	}
+	if err = os.RemoveAll(foreign); err != nil {
+		t.Fatal(err)
+	}
+	if err = e.Merge(m); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = os.Lstat(m.Workspace); !os.IsNotExist(err) {
+		t.Fatal("plain merge retry did not remove retained worktree")
+	}
+	if len(m.Backups) != 0 {
+		t.Fatalf("merge retry created recovery backups: %v", m.Backups)
+	}
+}
+
 func TestMergeForceKeepsDirtyHookFailureFatal(t *testing.T) {
 	e := fixture(t, 0)
 	e.Config.Root.Hooks = Hooks{HookMergeBefore: {{ID: "dirty", Shell: `printf 'dirty\n' > dirty.txt; false`}}}
