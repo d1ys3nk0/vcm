@@ -516,7 +516,8 @@ func TestMergeForceKeepsRunnerAndRevisionFailuresFatal(t *testing.T) {
 		}
 		commitFile(t, e.Root, "drift.txt", "drift\n")
 		e.MergeForce = true
-		if err = e.Merge(m); err == nil || !strings.Contains(err.Error(), "target advanced") {
+		want := fmt.Sprintf("repository root: target advanced from recorded base; run vcm refresh %s", m.Tag)
+		if err = e.Merge(m); err == nil || err.Error() != want {
 			t.Fatalf("force ignored target drift: %v", err)
 		}
 	})
@@ -747,7 +748,8 @@ func TestRefreshAdvancedAndSelectedRepositories(t *testing.T) {
 	}
 	commitFile(t, m.Repositories[1].Path, "feature.txt", "feature\n")
 	commitFile(t, m.Repositories[1].Origin, "trunk.txt", "trunk\n")
-	if err = e.Merge(m, "feat: selected refresh"); err == nil || !strings.Contains(err.Error(), "vcm refresh") {
+	want := fmt.Sprintf("repository repo0: target advanced from recorded base; run vcm refresh %s", m.Tag)
+	if err = e.Merge(m, "feat: selected refresh"); err == nil || err.Error() != want {
 		t.Fatalf("merge did not block advanced target: %v", err)
 	}
 	if err = e.Refresh(m); err != nil {
@@ -1167,7 +1169,8 @@ func TestMergeRejectsTargetDriftBeforeFurtherIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = e.Merge(m, "feat: test change"); err == nil || !strings.Contains(err.Error(), "target advanced") {
+	want := fmt.Sprintf("repository root: target advanced from recorded base; run vcm refresh %s", m.Tag)
+	if err = e.Merge(m, "feat: test change"); err == nil || err.Error() != want {
 		t.Fatalf("target drift accepted: %v", err)
 	}
 	if got := mustGit(t, m.Repositories[1].Origin, "rev-parse", "HEAD"); got != firstTarget {

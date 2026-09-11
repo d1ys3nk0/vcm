@@ -30,7 +30,7 @@ Commands:
   create <slug>        Synchronize origins and create an isolated Change workspace.
   list                 List recorded Changes.
   status [change]      Show a Change's lifecycle, hooks, merge, and recovery state.
-  refresh [change]     Merge advanced local trunks into a ready Change; rerun verification.
+  refresh [change]     Merge advanced local trunks into a ready Change.
   merge [change]       Gate, squash-merge, then remove the owned Change worktrees.
   drop [change]        Remove the resources owned by a completed or discarded Change.
   prune                Interactively clean retained checkouts and remove unexpected Git resources.

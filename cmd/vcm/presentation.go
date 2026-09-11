@@ -117,10 +117,9 @@ type refreshRepositoryResult struct {
 	Source string `json:"source"`
 }
 type refreshResult struct {
-	Tag                 string                    `json:"tag"`
-	State               string                    `json:"state"`
-	VerificationInvalid bool                      `json:"verification_invalid"`
-	Repositories        []refreshRepositoryResult `json:"repositories"`
+	Tag          string                    `json:"tag"`
+	State        string                    `json:"state"`
+	Repositories []refreshRepositoryResult `json:"repositories"`
 }
 
 type dropRepositoryResult struct {
@@ -273,7 +272,7 @@ func newRefreshResult(m *vcm.Manifest) refreshResult {
 	for _, repository := range m.Repositories {
 		repositories = append(repositories, refreshRepositoryResult{Name: repository.Repository.Name, Base: repository.Base, Source: repository.Source})
 	}
-	return refreshResult{Tag: m.Tag, State: m.State, VerificationInvalid: true, Repositories: repositories}
+	return refreshResult{Tag: m.Tag, State: m.State, Repositories: repositories}
 }
 
 func newDropResult(m *vcm.Manifest) dropResult {
@@ -463,7 +462,7 @@ func renderHuman(out io.Writer, result any) error {
 		_, err := fmt.Fprintf(out, "Merged Change %s (%d/%d repositories).\n", value.Tag, merged, len(value.Repositories))
 		return err
 	case refreshResult:
-		_, err := fmt.Fprintf(out, "Refreshed Change %s (%d repositories). Existing verification is invalid; rerun $sdlc-verify.\n", value.Tag, len(value.Repositories))
+		_, err := fmt.Fprintf(out, "Refreshed Change %s (%d repositories).\n", value.Tag, len(value.Repositories))
 		return err
 	case dropResult:
 		removed := 0

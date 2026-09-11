@@ -484,7 +484,7 @@ func (e *Engine) preflight(m *Manifest) error {
 			return fmt.Errorf("repository %s: origin must be on trunk %s", r.Repository.Name, r.Repository.Trunk)
 		}
 		if target != r.Base {
-			return fmt.Errorf("repository %s: target advanced from recorded base; run vcm refresh %s and rerun $sdlc-verify", r.Repository.Name, m.Tag)
+			return fmt.Errorf("repository %s: target advanced from recorded base; run vcm refresh %s", r.Repository.Name, m.Tag)
 		}
 	}
 	return nil
@@ -506,7 +506,7 @@ func (e *Engine) freezeMerge(m *Manifest) error {
 			return err
 		}
 		if target != r.Base {
-			return fmt.Errorf("repository %s: target changed after merge gate; run vcm refresh %s and rerun $sdlc-verify", r.Repository.Name, m.Tag)
+			return fmt.Errorf("repository %s: target changed after merge gate; run vcm refresh %s", r.Repository.Name, m.Tag)
 		}
 		if r.Source != "" && source != r.Source {
 			return fmt.Errorf("repository %s: source changed after merge gate", r.Repository.Name)

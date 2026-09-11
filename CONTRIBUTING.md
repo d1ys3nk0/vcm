@@ -15,6 +15,8 @@ Release cross-builds require a missing `dist` directory to avoid mixing versions
 
 Keep configuration validation and operation planning separate from Git, hooks, and persistence. Add behavioral regression tests with temporary local repositories and remotes. Exercise interrupted operations and preserved user resources. Do not add tests that freeze configurable values or private implementation details. Tests must not start dependency services or use real product checkouts.
 
+Keep VCM project-agnostic. Core behavior, public contracts, output, help, and documentation must not depend on or prescribe downstream skills, commands, repository layouts, identities, or workflow steps; project policy belongs in configured hooks.
+
 CI runs formatting checks, `go vet`, POSIX shell syntax checks, race-enabled tests, installer behavioral tests, vulnerability scanning, and four release cross-builds directly on Linux and macOS. Taskfile owns the local verification jobs; Lefthook dispatches the staged-file checks to those jobs before commits. Use `task verify` for the full local suite and `task fix:format` to apply formatting separately.
 
 Use focused Conventional Commits. Publishing is a separate operator action: only explicit `vX.Y.Z` tags whose commits belong to `main` can release. The release workflow repeats validation, builds archives without write permissions, then publishes checksums, the installer, and provenance in a separate publishing job. Actions are pinned to immutable revisions.

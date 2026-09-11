@@ -46,7 +46,7 @@ vcm list
 
 The root and child trunks need configured `origin` remotes. Before creation, publish the initial configuration through your normal Git workflow so synchronization can rebase onto its remote trunk. Ignore each configured child checkout path in the root repository.
 
-Make and commit changes in the returned sibling root and its child worktrees. Use `vcm status` within the Change root. If local trunks advanced, run `vcm refresh` and repeat verification. Then explicitly run `vcm merge` when ready to integrate into local trunks. A fresh merge defaults its Conventional Commit subject to `feat: <manifest slug>`; use `--message '<conventional subject>'` to override it. Merge does not fetch, pull, or push. After successful local integration is checkpointed, merge removes the managed worktrees and their Git-ignored content without a VCM force flag or recovery backup, then completes post-cleanup finalization from the base repositories. Ordinary nonignored untracked files, tracked or staged modifications, ownership or revision drift, conflicts, and foreign nested Git repositories still stop merge before their affected worktree is removed. Run `vcm push` from the canonical workspace to publish the resulting trunks. Run `vcm drop` to discard an unneeded Change without integration; inspect `--dry-run` before forced removal.
+Make and commit changes in the returned sibling root and its child worktrees. Use `vcm status` within the Change root. If local trunks advanced, run `vcm refresh`. Then explicitly run `vcm merge` when ready to integrate into local trunks. A fresh merge defaults its Conventional Commit subject to `feat: <manifest slug>`; use `--message '<conventional subject>'` to override it. Merge does not fetch, pull, or push. After successful local integration is checkpointed, merge removes the managed worktrees and their Git-ignored content without a VCM force flag or recovery backup, then completes post-cleanup finalization from the base repositories. Ordinary nonignored untracked files, tracked or staged modifications, ownership or revision drift, conflicts, and foreign nested Git repositories still stop merge before their affected worktree is removed. Run `vcm push` from the canonical workspace to publish the resulting trunks. Run `vcm drop` to discard an unneeded Change without integration; inspect `--dry-run` before forced removal.
 
 ## Commands
 
@@ -93,6 +93,7 @@ JSON output is command-specific and does not expose the persisted state. Timesta
 | `create` | `{tag, slug, workspace, state, repositories:[{name, path, base}]}` |
 | `list` | `[{tag, slug, workspace, state, created_at, repository_count, merged_count, removed_count}]` |
 | `status` | `{tag, slug, workspace, state, created_at, repositories, hooks, backups, recovery_directory, pending_sync}` |
+| `refresh` | `{tag, state, repositories:[{name, base, source}]}` |
 | `merge` | `{tag, state, repositories:[{name, merged, source, target}], backups}` |
 | `drop` | `{tag, state, repositories:[{name, removed}], backups}` |
 | `prune` | `{complete, workspace, actions:[{repository, action, target, status, detail?}], remaining_issues:[...]}` |

@@ -214,6 +214,9 @@ func TestHelpDocumentsEveryCommandAndOption(t *testing.T) {
 			t.Errorf("help is missing %q:\n%s", phrase, output)
 		}
 	}
+	if strings.Contains(strings.ToLower(output), "verification") {
+		t.Fatalf("help prescribes a downstream verification workflow:\n%s", output)
+	}
 }
 
 func TestMergeOverrideFlagsValidationAndDryRun(t *testing.T) {
