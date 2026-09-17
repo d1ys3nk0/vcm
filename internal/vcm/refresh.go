@@ -24,38 +24,45 @@ func (e *Engine) Refresh(m *Manifest) error {
 		if err := e.owned(m, r); err != nil {
 			return err
 		}
+		for reconciliation := 0; r.Intent == "refresh"; reconciliation++ {
+			if reconciliation >= 2 {
+				return fmt.Errorf("repository %s: refresh reconciliation exceeded its progress bound", r.Repository.Name)
+			}
+			before := refreshCheckpoint(r)
+			recovery, err := inspectRefreshRecovery(r)
+			if err != nil {
+				return err
+			}
+			if recovery.state == refreshRecoveryIncomplete {
+				target, targetErr := head(r.Origin)
+				if targetErr != nil {
+					return targetErr
+				}
+				if target != r.TargetBefore && !ancestor(r.Origin, r.TargetBefore, target) {
+					return fmt.Errorf("repository %s: current canonical target %s does not contain recorded refresh target %s; inspect rewritten target before retrying", r.Repository.Name, target, r.TargetBefore)
+				}
+				if recovery.source != r.Source && !ancestor(r.Path, r.TargetBefore, recovery.source) {
+					return fmt.Errorf("repository %s: Change HEAD %s does not contain recorded refresh target %s; restore or complete the recorded refresh before retrying", r.Repository.Name, recovery.source, r.TargetBefore)
+				}
+				if cleanErr := clean(r.Path); cleanErr != nil {
+					return fmt.Errorf("repository %s: recorded refresh is incomplete with canonical target %s (recorded %s): %w", r.Repository.Name, target, r.TargetBefore, cleanErr)
+				}
+				return fmt.Errorf("repository %s: recorded refresh is incomplete with Change HEAD %s, recorded target %s, and current canonical target %s; complete the recorded refresh before retrying", r.Repository.Name, recovery.source, r.TargetBefore, target)
+			}
+			if err = e.finalizeRefreshRecovery(m, r, recovery); err != nil {
+				return err
+			}
+			if refreshCheckpoint(r) == before {
+				return fmt.Errorf("repository %s: refresh reconciliation made no observable progress", r.Repository.Name)
+			}
+		}
 		target, err := head(r.Origin)
 		if err != nil {
 			return err
 		}
-		if r.Intent == "refresh" && r.TargetBefore != "" && target != r.TargetBefore {
-			return fmt.Errorf("repository %s: target drifted during refresh; restore recorded target and retry", r.Repository.Name)
-		}
 		source, err := head(r.Path)
 		if err != nil {
 			return err
-		}
-		if r.Intent == "refresh" && r.MergeCommit != "" {
-			if source == r.MergeCommit {
-				r.Base, r.Source, r.TargetBefore, r.MergeTree, r.MergeCommit, r.Intent = r.TargetBefore, source, "", "", "", ""
-				return e.store.save(m)
-			}
-			index, indexErr := git(r.Path, "write-tree")
-			worktreeDiff, diffErr := git(r.Path, "diff", "--name-only")
-			if source == r.Source && indexErr == nil && diffErr == nil && index == r.MergeTree && worktreeDiff == "" {
-				if _, err = git(r.Path, "update-ref", "refs/heads/"+m.Tag, r.MergeCommit, source); err != nil {
-					return err
-				}
-				r.Base, r.Source, r.TargetBefore, r.MergeTree, r.MergeCommit, r.Intent = r.TargetBefore, r.MergeCommit, "", "", "", ""
-				return e.store.save(m)
-			}
-		}
-		if r.Intent == "refresh" && source != r.Source && ancestor(r.Path, r.TargetBefore, source) {
-			r.Base, r.Source, r.TargetBefore, r.MergeTree, r.MergeCommit, r.Intent = r.TargetBefore, source, "", "", "", ""
-			if err = e.store.save(m); err != nil {
-				return err
-			}
-			return nil
 		}
 		if err := clean(r.Origin); err != nil {
 			return err

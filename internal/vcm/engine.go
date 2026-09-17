@@ -34,6 +34,8 @@ type RepositoryStatus struct {
 	Path               string
 	Source             string
 	Target             string
+	RecordedTarget     string
+	RecoveryState      string
 	Merged             bool
 	Removed            bool
 	Intent             string
@@ -879,7 +881,7 @@ func hooksFor(config Config, repository string) (Hooks, error) {
 func (e *Engine) Status(m *Manifest) StatusReport {
 	repos := []RepositoryStatus{}
 	for _, r := range m.Repositories {
-		state := RepositoryStatus{Name: r.Repository.Name, Path: r.Path, Merged: r.Merged, Removed: r.Removed, Intent: r.Intent}
+		state := RepositoryStatus{Name: r.Repository.Name, Path: r.Path, Merged: r.Merged, Removed: r.Removed, Intent: r.Intent, RecordedTarget: r.TargetBefore}
 		if r.Repository.Name != "root" && r.Path == "" {
 			state.Error = fmt.Sprintf("selected repository %s is absent from current configuration; restore its vcm.yml entry", r.Repository.Name)
 			repos = append(repos, state)
@@ -896,6 +898,14 @@ func (e *Engine) Status(m *Manifest) StatusReport {
 			}
 			if err = e.owned(m, &r); err != nil {
 				state.OwnershipError = err.Error()
+			}
+			if r.Intent == "refresh" {
+				recovery, recoveryErr := inspectRefreshRecovery(&r)
+				if recoveryErr != nil && state.Error == "" {
+					state.Error = recoveryErr.Error()
+				} else {
+					state.RecoveryState = recovery.state
+				}
 			}
 		}
 		target, err := head(r.Origin)

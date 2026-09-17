@@ -783,46 +783,157 @@ func TestRefreshConflictRepairAndTargetDrift(t *testing.T) {
 	if err = e.Refresh(m); err == nil || !strings.Contains(err.Error(), "conflict preserved") {
 		t.Fatalf("refresh conflict not preserved: %v", err)
 	}
+	recordedTarget := m.Repositories[1].TargetBefore
 	commitFile(t, m.Repositories[1].Origin, "drift.txt", "drift\n")
-	if err = e.Refresh(m); err == nil || !strings.Contains(err.Error(), "target drifted") {
-		t.Fatalf("target drift accepted: %v", err)
-	}
-	// Restore the checkpointed target, resolve and commit the preserved merge.
-	mustGit(t, m.Repositories[1].Origin, "reset", "--hard", m.Repositories[1].TargetBefore)
+	advancedTarget := mustGit(t, m.Repositories[1].Origin, "rev-parse", "HEAD")
+	// Resolve and commit the preserved merge without moving the canonical trunk
+	// back to the recorded refresh target.
 	put(t, filepath.Join(m.Repositories[1].Path, "conflict.txt"), "resolved\n")
 	mustGit(t, m.Repositories[1].Path, "add", "conflict.txt")
 	mustGit(t, m.Repositories[1].Path, "commit", "--no-edit")
+	unrelated := filepath.Join(m.Repositories[1].Path, "unrelated.txt")
+	put(t, unrelated, "unrelated\n")
+	if err = e.Refresh(m); err == nil || !strings.Contains(err.Error(), "completed refresh recovery is not clean") {
+		t.Fatalf("refresh accepted unrelated dirty content: %v", err)
+	}
+	if m.Repositories[1].Intent != "refresh" {
+		t.Fatalf("dirty recovery finalized its checkpoint: %+v", m.Repositories[1])
+	}
+	if err = os.Remove(unrelated); err != nil {
+		t.Fatal(err)
+	}
+	report := e.Status(m)
+	if got := report.Repositories[1]; got.RecordedTarget != recordedTarget || got.Target != advancedTarget || got.RecoveryState != refreshRecoveryCommittedResolution {
+		t.Fatalf("status did not describe refresh recovery: %+v", got)
+	}
 	if err = e.Refresh(m); err != nil {
 		t.Fatal(err)
 	}
 	if m.State != "ready" || m.Repositories[1].Intent != "" {
 		t.Fatalf("refresh did not recover: %+v", m.Repositories[1])
 	}
+	changeHead := mustGit(t, m.Repositories[1].Path, "rev-parse", "HEAD")
+	if !ancestor(m.Repositories[1].Path, recordedTarget, changeHead) || !ancestor(m.Repositories[1].Path, advancedTarget, changeHead) {
+		t.Fatalf("reconciled refresh %s does not contain recorded target %s and advanced target %s", changeHead, recordedTarget, advancedTarget)
+	}
+	if _, err = os.Stat(filepath.Join(m.Repositories[1].Path, "drift.txt")); err != nil {
+		t.Fatalf("reconciled refresh omitted canonical advance: %v", err)
+	}
 }
 
-func TestRefreshRecoversPreparedIndex(t *testing.T) {
+func TestRefreshRejectsAdvancedTargetWhileConflictIsUnresolved(t *testing.T) {
 	e := fixture(t, 1)
-	m, err := e.Create("refresh-index")
+	m, err := e.Create("refresh-unresolved")
 	if err != nil {
 		t.Fatal(err)
 	}
 	r := &m.Repositories[1]
-	commitFile(t, r.Origin, "trunk.txt", "trunk\n")
-	r.Source = mustGit(t, r.Path, "rev-parse", "HEAD")
-	r.TargetBefore = mustGit(t, r.Origin, "rev-parse", "HEAD")
-	r.MergeTree = strings.Split(mustGit(t, r.Path, "merge-tree", "--write-tree", r.Source, r.TargetBefore), "\n")[0]
-	r.MergeCommit = mustGit(t, r.Path, "commit-tree", r.MergeTree, "-p", r.Source, "-p", r.TargetBefore, "-m", "chore(vcm): refresh test")
-	expected := r.MergeCommit
-	r.Intent, m.State = "refresh", "refreshing"
-	if err = e.store.save(m); err != nil {
+	commitFile(t, r.Path, "conflict.txt", "source\n")
+	commitFile(t, r.Origin, "conflict.txt", "target\n")
+	if err = e.Refresh(m); err == nil || !strings.Contains(err.Error(), "conflict preserved") {
+		t.Fatalf("refresh conflict not preserved: %v", err)
+	}
+	commitFile(t, r.Origin, "advanced.txt", "advanced\n")
+	if err = e.Refresh(m); err == nil || !strings.Contains(err.Error(), "recorded refresh is incomplete") || !strings.Contains(err.Error(), "dirty checkout") {
+		t.Fatalf("unresolved refresh was not rejected with actionable diagnostics: %v", err)
+	}
+}
+
+func TestRefreshRejectsRewrittenCanonicalTargetAfterCompletedResolution(t *testing.T) {
+	e := fixture(t, 1)
+	m, err := e.Create("refresh-rewritten")
+	if err != nil {
 		t.Fatal(err)
 	}
-	mustGit(t, r.Path, "read-tree", "-u", "-m", r.Source, r.MergeCommit)
-	if err = e.Refresh(m); err != nil {
-		t.Fatal(err)
+	r := &m.Repositories[1]
+	originalBase := r.Base
+	commitFile(t, r.Path, "conflict.txt", "source\n")
+	commitFile(t, r.Origin, "conflict.txt", "target\n")
+	if err = e.Refresh(m); err == nil || !strings.Contains(err.Error(), "conflict preserved") {
+		t.Fatalf("refresh conflict not preserved: %v", err)
 	}
-	if got := mustGit(t, r.Path, "rev-parse", "HEAD"); got != expected {
-		t.Fatalf("prepared refresh not resumed: %s", got)
+	recordedTarget := r.TargetBefore
+	put(t, filepath.Join(r.Path, "conflict.txt"), "resolved\n")
+	mustGit(t, r.Path, "add", "conflict.txt")
+	mustGit(t, r.Path, "commit", "--no-edit")
+	mustGit(t, r.Origin, "reset", "--hard", originalBase)
+	commitFile(t, r.Origin, "rewritten.txt", "rewritten\n")
+	rewrittenTarget := mustGit(t, r.Origin, "rev-parse", "HEAD")
+
+	if err = e.Refresh(m); err == nil || !strings.Contains(err.Error(), "no longer contains recorded base") {
+		t.Fatalf("rewritten canonical target was not rejected: %v", err)
+	}
+	if r.Base != recordedTarget || r.Intent != "" {
+		t.Fatalf("completed checkpoint was not finalized before rewritten target rejection: %+v", r)
+	}
+	if ancestor(r.Origin, recordedTarget, rewrittenTarget) {
+		t.Fatalf("test canonical target unexpectedly contains recorded target")
+	}
+}
+
+func TestRefreshReconcilesAdvancedTargetAfterPreparedCheckpoint(t *testing.T) {
+	for _, prepared := range []string{"merge-commit", "index"} {
+		t.Run(prepared, func(t *testing.T) {
+			e := fixture(t, 1)
+			m, err := e.Create("refresh-" + prepared)
+			if err != nil {
+				t.Fatal(err)
+			}
+			r := &m.Repositories[1]
+			commitFile(t, r.Path, "feature.txt", "feature\n")
+			commitFile(t, r.Origin, "trunk.txt", "trunk\n")
+			r.Source = mustGit(t, r.Path, "rev-parse", "HEAD")
+			r.TargetBefore = mustGit(t, r.Origin, "rev-parse", "HEAD")
+			r.MergeTree = strings.Split(mustGit(t, r.Path, "merge-tree", "--write-tree", r.Source, r.TargetBefore), "\n")[0]
+			r.MergeCommit = mustGit(t, r.Path, "commit-tree", r.MergeTree, "-p", r.Source, "-p", r.TargetBefore, "-m", "chore(vcm): refresh test")
+			recordedTarget := r.TargetBefore
+			r.Intent, m.State = "refresh", "refreshing"
+			if err = e.store.save(m); err != nil {
+				t.Fatal(err)
+			}
+			switch prepared {
+			case "merge-commit":
+				mustGit(t, r.Path, "update-ref", "refs/heads/"+m.Tag, r.MergeCommit, r.Source)
+				mustGit(t, r.Path, "reset", "--hard", r.MergeCommit)
+			case "index":
+				mustGit(t, r.Path, "read-tree", "-u", "-m", r.Source, r.MergeCommit)
+			}
+			commitFile(t, r.Origin, "newer.txt", "newer\n")
+			advancedTarget := mustGit(t, r.Origin, "rev-parse", "HEAD")
+			unrelated := filepath.Join(r.Path, "unrelated.txt")
+			put(t, unrelated, "unrelated\n")
+			dirtyError := "completed refresh recovery is not clean"
+			if prepared == "index" {
+				dirtyError = "refresh recovery contains unrelated untracked content"
+			}
+			if err = e.Refresh(m); err == nil || !strings.Contains(err.Error(), dirtyError) {
+				t.Fatalf("%s recovery accepted unrelated untracked content: %v", prepared, err)
+			}
+			if r.Intent != "refresh" {
+				t.Fatalf("dirty %s recovery finalized its checkpoint: %+v", prepared, r)
+			}
+			if err = os.Remove(unrelated); err != nil {
+				t.Fatal(err)
+			}
+			expectedRecovery := refreshRecoveryRecordedMergeCommit
+			if prepared == "index" {
+				expectedRecovery = refreshRecoveryPreparedIndex
+			}
+			if got := e.Status(m).Repositories[1]; got.RecordedTarget != recordedTarget || got.Target != advancedTarget || got.RecoveryState != expectedRecovery {
+				t.Fatalf("status did not describe %s recovery: %+v", prepared, got)
+			}
+
+			if err = e.Refresh(m); err != nil {
+				t.Fatal(err)
+			}
+			changeHead := mustGit(t, r.Path, "rev-parse", "HEAD")
+			if m.State != "ready" || r.Intent != "" || r.Base != advancedTarget {
+				t.Fatalf("prepared refresh did not reconcile: state=%s repository=%+v", m.State, r)
+			}
+			if !ancestor(r.Path, recordedTarget, changeHead) || !ancestor(r.Path, advancedTarget, changeHead) {
+				t.Fatalf("reconciled refresh %s does not contain recorded target %s and advanced target %s", changeHead, recordedTarget, advancedTarget)
+			}
+		})
 	}
 }
 

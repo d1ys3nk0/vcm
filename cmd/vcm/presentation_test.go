@@ -73,13 +73,13 @@ func TestStatusUsesFullJSONHashesAndAbbreviatedHumanHashes(t *testing.T) {
 		Hooks: map[string]vcm.HookState{"root/merge-before/check": {Status: "failed", Error: "hook detail"}},
 	}
 	report := vcm.StatusReport{
-		Repositories:      []vcm.RepositoryStatus{{Name: "root", Path: manifest.Workspace, Source: head, Target: target, DirtyOrInterrupted: "uncommitted files"}},
+		Repositories:      []vcm.RepositoryStatus{{Name: "root", Path: manifest.Workspace, Source: head, Target: target, RecordedTarget: strings.Repeat("3", 40), RecoveryState: "committed_resolution", DirtyOrInterrupted: "uncommitted files"}},
 		RecoveryDirectory: "/tmp/recovery",
 		PendingSync:       []vcm.PendingSyncStatus{{Path: "/tmp/root.sync", Error: "repair required"}},
 	}
 	result := newStatusResult(manifest, report)
 	human := renderHumanForTest(t, result)
-	for _, expected := range []string{"1111111", "2222222", "dirty", "uncommitted files", "Hooks:", "Backups:", "Pending synchronization:"} {
+	for _, expected := range []string{"1111111", "2222222", "3333333", "committed_resolution", "dirty", "uncommitted files", "Hooks:", "Backups:", "Pending synchronization:"} {
 		if !strings.Contains(human, expected) {
 			t.Errorf("status output is missing %q:\n%s", expected, human)
 		}
@@ -95,7 +95,7 @@ func TestStatusUsesFullJSONHashesAndAbbreviatedHumanHashes(t *testing.T) {
 	if err := json.Unmarshal(encoded.Bytes(), &decoded); err != nil {
 		t.Fatal(err)
 	}
-	if decoded.Repositories[0].Head != head || decoded.Repositories[0].Target != target {
+	if decoded.Repositories[0].Head != head || decoded.Repositories[0].Target != target || decoded.Repositories[0].RecordedTarget != strings.Repeat("3", 40) || decoded.Repositories[0].RecoveryState != "committed_resolution" {
 		t.Fatalf("JSON revisions were abbreviated: %+v", decoded.Repositories[0])
 	}
 	if !strings.Contains(encoded.String(), `"created_at":"2026-09-02T10:00:00Z"`) {

@@ -51,14 +51,16 @@ type listResult struct {
 }
 
 type statusRepositoryResult struct {
-	Name          string `json:"name"`
-	Path          string `json:"path"`
-	Status        string `json:"status"`
-	Head          string `json:"head,omitempty"`
-	Target        string `json:"target,omitempty"`
-	Intent        string `json:"intent,omitempty"`
-	Error         string `json:"error,omitempty"`
-	TargetChanged bool   `json:"target_changed,omitempty"`
+	Name           string `json:"name"`
+	Path           string `json:"path"`
+	Status         string `json:"status"`
+	Head           string `json:"head,omitempty"`
+	Target         string `json:"target,omitempty"`
+	RecordedTarget string `json:"recorded_target,omitempty"`
+	RecoveryState  string `json:"recovery_state,omitempty"`
+	Intent         string `json:"intent,omitempty"`
+	Error          string `json:"error,omitempty"`
+	TargetChanged  bool   `json:"target_changed,omitempty"`
 }
 
 type hookResult struct {
@@ -229,6 +231,7 @@ func newStatusResult(m *vcm.Manifest, report vcm.StatusReport) statusResult {
 		state, detail := repositoryStatus(repository)
 		repositories = append(repositories, statusRepositoryResult{
 			Name: repository.Name, Path: repository.Path, Status: state, Head: repository.Source, Target: repository.Target,
+			RecordedTarget: repository.RecordedTarget, RecoveryState: repository.RecoveryState,
 			Intent: repository.Intent, Error: detail, TargetChanged: repository.TargetChanged,
 		})
 	}
@@ -472,9 +475,9 @@ func renderHumanStyled(out io.Writer, result any, style humanStyle) error {
 		if _, err := fmt.Fprintf(out, "%s %s\n%s %s\n%s %s\n%s %s\n\n", style.paint(semanticCyanBold, "Change:"), value.Tag, style.paint(semanticCyanBold, "State:"), style.paint(statusColor(value.State), value.State), style.paint(semanticCyanBold, "Created:"), value.CreatedAt.Format(time.RFC3339), style.paint(semanticCyanBold, "Workspace:"), value.Workspace); err != nil {
 			return err
 		}
-		repositories := [][]string{tableHeader(style, "Repository", "Status", "HEAD", "Target", "Detail")}
+		repositories := [][]string{tableHeader(style, "Repository", "Status", "HEAD", "Recorded target", "Current target", "Recovery", "Detail")}
 		for _, repository := range value.Repositories {
-			repositories = append(repositories, []string{repository.Name, tableStatus(style, repository.Status), abbreviated(repository.Head), abbreviated(repository.Target), repository.Error})
+			repositories = append(repositories, []string{repository.Name, tableStatus(style, repository.Status), abbreviated(repository.Head), abbreviated(repository.RecordedTarget), abbreviated(repository.Target), repository.RecoveryState, repository.Error})
 		}
 		if err := renderTable(out, repositories); err != nil {
 			return err
