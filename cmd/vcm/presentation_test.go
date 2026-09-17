@@ -170,6 +170,42 @@ func TestAgeBoundaries(t *testing.T) {
 	}
 }
 
+func TestTreePresentationContract(t *testing.T) {
+	report := vcm.TreeReport{Workspace: "/workspace", Context: "change", Change: "260910120000-example", Repositories: []vcm.TreeRepository{
+		{Name: "root", Path: "/change", Available: true, Branch: "change", Clean: false, TrackedChanges: 2, UntrackedFiles: 1, SyncState: "diverged", SyncTarget: "main", Ahead: 3, Behind: 4},
+		{Name: "api", Path: "/change/api", SyncState: "unavailable"},
+	}}
+	result := newTreeResult(report)
+	human := renderHumanForTest(t, result)
+	for _, expected := range []string{"Repository", "Branch", "Tree", "Sync", "Path", "2 changed, 1 untracked", "diverged +3/-4", "unavailable"} {
+		if !strings.Contains(human, expected) {
+			t.Fatalf("tree output omitted %q:\n%s", expected, human)
+		}
+	}
+	var encoded bytes.Buffer
+	if err := renderJSON(&encoded, result); err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(encoded.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["workspace"] != report.Workspace || payload["context"] != "change" || payload["change"] != report.Change {
+		t.Fatalf("unexpected tree JSON: %s", encoded.String())
+	}
+	repositories := payload["repositories"].([]any)
+	available := repositories[0].(map[string]any)
+	for _, field := range []string{"branch", "clean", "tracked_changes", "untracked_files", "sync_state", "sync_target", "ahead", "behind", "cached"} {
+		if _, ok := available[field]; !ok {
+			t.Fatalf("available repository omitted %s: %s", field, encoded.String())
+		}
+	}
+	unavailable := repositories[1].(map[string]any)
+	if _, ok := unavailable["branch"]; ok {
+		t.Fatalf("unavailable repository exposed available-only fields: %s", encoded.String())
+	}
+}
+
 func TestDryRunHumanOutputShowsForceOnlyWhenApplicable(t *testing.T) {
 	bootstrap := renderHumanForTest(t, dryRunResult{Command: "bootstrap", DryRun: true, Resources: []string{"/workspace"}})
 	if strings.Contains(bootstrap, "Force:") {

@@ -25,12 +25,14 @@ Commands:
   validate             Check vcm.yml and the repository dependency graph.
   check                Audit repository cleanliness, worktrees, and local branches.
   bootstrap            Clone missing configured repositories and verify existing origins.
-  sync                 Fast-forward configured workspace and child trunks from origin.
+  tree                 Show repository cleanliness and local synchronization state.
+  sync                 Fetch configured remote trunks into local tracking refs.
+  pull                 Rebase canonical local trunks onto their remote trunks.
   push                 Validate and publish child trunks, then the workspace root trunk.
   create <slug>        Synchronize origins and create an isolated Change workspace.
   list                 List recorded Changes.
   status [change]      Show a Change's lifecycle, hooks, merge, and recovery state.
-  refresh [change]     Merge advanced local trunks into a ready Change.
+  refresh              Merge advanced local trunks into the current Change.
   merge [change]       Gate, squash-merge, then remove the owned Change worktrees.
   drop [change]        Remove the resources owned by a completed or discarded Change.
   prune                Interactively clean retained checkouts and remove unexpected Git resources.
@@ -42,9 +44,8 @@ Global options:
   --json               Emit machine-readable JSON to stdout.
   --color MODE         Color human output: auto, always, or never (default: auto).
   --dry-run            Show the operation plan without changing files or running hooks.
-                       Supported by bootstrap, sync, push, create, refresh, merge, drop, and prune.
-  -f, --force          For merge, ignore clean lifecycle hook command failures. For sync,
-                       reset divergent child trunks after creating recovery backups. For drop,
+                       Supported by bootstrap, sync, pull, push, create, refresh, merge, drop, and prune.
+  -f, --force          For merge, ignore clean lifecycle hook command failures. For drop,
                        preserve recovery backups before discarding changes.
   --only NAMES         For create, include exactly these comma-separated child repositories.
   --except NAMES       For create, exclude these comma-separated child repositories.
@@ -55,8 +56,8 @@ Global options:
 
 Change selection:
   The optional [change] is a managed Change tag or its root workspace path. If it is
-  omitted, status, refresh, merge, and drop infer the Change when run anywhere inside
-  its managed worktree. Outside a managed Change worktree, [change] is required.
+  omitted, status, merge, and drop infer the Change when run anywhere inside its managed
+  worktree. Refresh is available only from inside the target managed Change.
 
 Examples:
   vcm validate
@@ -66,11 +67,14 @@ Examples:
   vcm create improve-search --except devtools
   vcm status 260910120000-improve-search
   vcm check
+  vcm tree
+  vcm sync
+  vcm pull
   vcm push --dry-run
   vcm push
   vcm prune --dry-run
   vcm prune
-  vcm refresh 260910120000-improve-search
+  vcm refresh
   vcm merge --dry-run --force --skip-hooks merge-after --skip-git-hooks
   vcm drop 260910120000-improve-search --force
 
@@ -151,14 +155,14 @@ func run(args []string) error {
 	if len(positionals) > 2 {
 		return fmt.Errorf("too many arguments")
 	}
-	if command != "create" && command != "refresh" && command != "merge" && command != "drop" && command != "status" && len(positionals) > 1 {
+	if command != "create" && command != "merge" && command != "drop" && command != "status" && len(positionals) > 1 {
 		return fmt.Errorf("%s takes no arguments", command)
 	}
 	selectionFlags := map[string]bool{}
 	flags.Visit(func(f *flag.Flag) { selectionFlags[f.Name] = true })
 	forceSet := selectionFlags["force"] || selectionFlags["f"]
-	if forceSet && command != "sync" && command != "merge" && command != "drop" {
-		return fmt.Errorf("--force is only supported by sync, merge, and drop")
+	if forceSet && command != "merge" && command != "drop" {
+		return fmt.Errorf("--force is only supported by merge and drop")
 	}
 	if (selectionFlags["only"] || selectionFlags["except"]) && command != "create" {
 		return fmt.Errorf("--only and --except are only supported by create")
@@ -181,8 +185,8 @@ func run(args []string) error {
 	if selectionFlags["except"] && except == "" {
 		return fmt.Errorf("--except contains a blank repository name")
 	}
-	if dry && command != "bootstrap" && command != "sync" && command != "push" && command != "create" && command != "refresh" && command != "merge" && command != "drop" && command != "prune" {
-		return fmt.Errorf("--dry-run is only supported by bootstrap, sync, push, create, refresh, merge, drop, and prune")
+	if dry && command != "bootstrap" && command != "sync" && command != "pull" && command != "push" && command != "create" && command != "refresh" && command != "merge" && command != "drop" && command != "prune" {
+		return fmt.Errorf("--dry-run is only supported by bootstrap, sync, pull, push, create, refresh, merge, drop, and prune")
 	}
 	if command == "version" {
 		return output(versionResult{Version: version, Commit: commit})
@@ -252,6 +256,12 @@ func run(args []string) error {
 		if err == nil {
 			result = report
 		}
+	case "tree":
+		var report vcm.TreeReport
+		report, err = engine.Tree(workspace)
+		if err == nil {
+			result = newTreeResult(report)
+		}
 	case "prune":
 		var report vcm.PruneReport
 		if dry {
@@ -276,10 +286,14 @@ func run(args []string) error {
 		if err == nil {
 			result = report
 		}
-	case "bootstrap", "sync", "push", "create", "refresh", "merge", "drop":
+	case "bootstrap", "sync", "pull", "push", "create", "refresh", "merge", "drop":
 		var m *vcm.Manifest
+		selector := arg
+		if command == "refresh" {
+			selector = ""
+		}
 		if command == "refresh" || command == "merge" || command == "drop" {
-			m, err = engine.Select(arg, cwd)
+			m, err = engine.Select(selector, cwd)
 			if err != nil {
 				return err
 			}
@@ -309,7 +323,7 @@ func run(args []string) error {
 		}
 		err = engine.Mutate(func() error {
 			if command == "refresh" || command == "merge" || command == "drop" {
-				m, err = engine.Select(arg, cwd)
+				m, err = engine.Select(selector, cwd)
 				if err != nil {
 					return err
 				}
@@ -319,6 +333,8 @@ func run(args []string) error {
 				return engine.Bootstrap()
 			case "sync":
 				return engine.Sync()
+			case "pull":
+				return engine.Pull()
 			case "push":
 				return engine.Push()
 			case "create":

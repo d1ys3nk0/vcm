@@ -159,8 +159,8 @@ func TestOperationLoggingCoversLifecycleOutcomes(t *testing.T) {
 	log := output.String()
 	for _, want := range []string{
 		"[bootstrap/repo0 @ " + childOrigin + "] validated existing checkout on trunk main",
-		"[sync/repo0 @ " + childOrigin + "] synchronized trunk main ",
-		" (fast-forward)",
+		"[sync/root @ " + e.Root + "] already current cached origin/main at ",
+		"[sync/repo0 @ " + childOrigin + "] already current cached origin/main at ",
 		"[create/root @ " + e.Root + "] synchronized trunk main ",
 		" (rebase)",
 		"[create/root @ " + m.Repositories[0].Path + "] created managed worktree at ",

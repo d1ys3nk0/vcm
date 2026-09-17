@@ -79,9 +79,9 @@ func (s humanStyle) tablePaint(color semanticColor, text string) string {
 
 func statusColor(status string) semanticColor {
 	switch status {
-	case "changed", "target changed", "dirty", "create", "refresh", "merge", "remove", "creating", "refreshing", "merging", "merge-finalizing", "dropping", "running", "warning", "blocked", "declined":
+	case "changed", "target changed", "dirty", "ahead", "behind", "diverged", "target missing", "create", "refresh", "merge", "remove", "creating", "refreshing", "merging", "merge-finalizing", "dropping", "running", "warning", "blocked", "declined":
 		return semanticYellow
-	case "clean", "unchanged", "skipped", "complete", "completed", "success", "ready", "merged", "removed", "dropped":
+	case "clean", "current", "unchanged", "skipped", "complete", "completed", "success", "ready", "merged", "removed", "dropped":
 		return semanticGreen
 	case "failed", "error", "issues", "findings":
 		return semanticRed

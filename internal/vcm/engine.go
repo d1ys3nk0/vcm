@@ -247,7 +247,7 @@ func (e *Engine) backup(operation, path, label string, m *Manifest) error {
 	e.logOperationOutcome(operation, label, path, "", "created", LogChanged, " recovery backup %s; history %s", filename, ref)
 	return nil
 }
-func (e *Engine) syncOne(r Repository, create bool) (string, error) {
+func (e *Engine) syncForCreate(r Repository) (string, error) {
 	p := filepath.Join(e.Root, r.Path)
 	if err := validateOrigin(p, r); err != nil {
 		return "", err
@@ -255,10 +255,11 @@ func (e *Engine) syncOne(r Repository, create bool) (string, error) {
 	if err := e.reconcileSync(r, p); err != nil {
 		return "", err
 	}
-	if err := clean(p); err != nil && (!e.Force || create) {
+	if err := clean(p); err != nil {
 		return "", err
 	}
-	if _, err := git(p, "fetch", "origin", r.Trunk); err != nil {
+	refspec := "+refs/heads/" + r.Trunk + ":refs/remotes/origin/" + r.Trunk
+	if _, err := git(p, "fetch", "--no-tags", "origin", refspec); err != nil {
 		return "", err
 	}
 	target, err := git(p, "rev-parse", "refs/remotes/origin/"+r.Trunk)
@@ -269,45 +270,14 @@ func (e *Engine) syncOne(r Repository, create bool) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if !create && !e.Force && !ancestor(p, trunk, target) {
-		return "", fmt.Errorf("repository %s sync: trunk diverges or has local commits; inspect or use --force with recovery backup", r.Name)
-	}
-	operation := "fast-forward"
-	if create {
-		operation = "rebase"
-	} else if e.Force {
-		operation = "reset"
-	}
-	if e.Force && !create {
-		if err = e.backup("sync", p, r.Name, nil); err != nil {
-			return "", err
-		}
-		if _, err = git(p, "update-ref", "refs/vcm/recovery/"+time.Now().UTC().Format("20060102T150405.000000000")+"-trunk", trunk); err != nil {
-			return "", err
-		}
-	}
-	complete, err := e.syncIntent(r, p, target, operation)
+	complete, err := e.syncIntent(r, p, target, "rebase")
 	if err != nil {
 		return "", err
-	}
-	if e.Force && !create {
-		if _, err = git(p, "reset", "--hard", "HEAD"); err != nil {
-			return "", err
-		}
-		if _, err = git(p, "clean", "-fdx"); err != nil {
-			return "", err
-		}
 	}
 	if _, err = git(p, "checkout", r.Trunk); err != nil {
 		return "", err
 	}
-	if create {
-		_, err = git(p, "rebase", target)
-	} else if e.Force {
-		_, err = git(p, "reset", "--hard", target)
-	} else {
-		_, err = git(p, "merge", "--ff-only", target)
-	}
+	_, err = git(p, "rebase", target)
 	if err != nil {
 		return "", fmt.Errorf("repository %s sync: %w; repair interrupted Git operation before retry", r.Name, err)
 	}
@@ -318,19 +288,33 @@ func (e *Engine) syncOne(r Repository, create bool) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	logOperation := "sync"
-	if create {
-		logOperation = "create"
-	}
-	e.logOperationOutcome(logOperation, r.Name, p, "", "synchronized", LogChanged, " trunk %s %s -> %s (%s)", r.Trunk, abbreviateRevision(trunk), abbreviateRevision(after), operation)
+	e.logOperationOutcome("create", r.Name, p, "", "synchronized", LogChanged, " trunk %s %s -> %s (rebase)", r.Trunk, abbreviateRevision(trunk), abbreviateRevision(after))
 	return after, nil
 }
 func (e *Engine) Sync() error {
-	ordered, _ := e.Config.Order()
-	for _, r := range ordered {
-		if _, err := e.syncOne(r, false); err != nil {
-			return err
+	repositories, err := e.canonicalRepositories(false)
+	if err != nil {
+		return err
+	}
+	for _, item := range repositories {
+		r := item.repository
+		if err := validateOrigin(item.path, r); err != nil {
+			return fmt.Errorf("repository %s sync: %w", r.Name, err)
 		}
+		before, _ := git(item.path, "rev-parse", "--verify", "refs/remotes/origin/"+r.Trunk)
+		refspec := "+refs/heads/" + r.Trunk + ":refs/remotes/origin/" + r.Trunk
+		if _, err := git(item.path, "fetch", "--no-tags", "origin", refspec); err != nil {
+			return fmt.Errorf("repository %s sync: fetch remote trunk %s: %w", r.Name, r.Trunk, err)
+		}
+		after, err := git(item.path, "rev-parse", "refs/remotes/origin/"+r.Trunk)
+		if err != nil {
+			return fmt.Errorf("repository %s sync: resolve cached remote trunk %s: %w", r.Name, r.Trunk, err)
+		}
+		semantic, outcome := LogChanged, "fetched"
+		if before == after {
+			semantic, outcome = LogSuccess, "already current"
+		}
+		e.logOperationOutcome("sync", r.Name, item.path, "", outcome, semantic, " cached origin/%s at %s", r.Trunk, abbreviateRevision(after))
 	}
 	return nil
 }
@@ -552,7 +536,7 @@ func (e *Engine) resumeCreate(m *Manifest) error {
 	for i := range m.Repositories {
 		r := &m.Repositories[i]
 		if r.Base == "" {
-			base, err := e.syncOne(r.Repository, true)
+			base, err := e.syncForCreate(r.Repository)
 			if err != nil {
 				return err
 			}

@@ -206,9 +206,9 @@ func TestHelpDocumentsEveryCommandAndOption(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, phrase := range []string{
-		"validate", "bootstrap", "sync", "push                 Validate and publish", "create <slug>", "list", "status [change]", "refresh [change]", "merge [change]", "drop [change]", "version",
+		"validate", "bootstrap", "tree", "sync", "pull", "push                 Validate and publish", "create <slug>", "list", "status [change]", "refresh              Merge", "merge [change]", "drop [change]", "version",
 		"--workspace PATH", "--json", "--dry-run", "--force", "--only NAMES", "--except NAMES", "--skip-hooks PHASES", "--skip-git-hooks", "feat: <manifest slug>", "Change selection:", "Examples:",
-		"anywhere inside", "Outside a managed Change worktree, [change] is required",
+		"inside its managed", "Refresh is available only from inside",
 	} {
 		if !strings.Contains(output, phrase) {
 			t.Errorf("help is missing %q:\n%s", phrase, output)
@@ -240,7 +240,7 @@ func TestMergeOverrideFlagsValidationAndDryRun(t *testing.T) {
 			t.Fatalf("human dry-run missing %q:\n%s", want, human)
 		}
 	}
-	for _, command := range []string{"refresh", "drop"} {
+	for _, command := range []string{"drop"} {
 		other, dryRunErr := runJSON[dryRunResult](t, command, manifest.Tag, "--dry-run", "--json", "--workspace", root)
 		if dryRunErr != nil {
 			t.Fatal(dryRunErr)
@@ -329,7 +329,7 @@ func TestMissingCommandShowsHelp(t *testing.T) {
 }
 
 func TestCommandRejectsUnexpectedArguments(t *testing.T) {
-	for _, args := range [][]string{{"version", "extra"}, {"validate", "extra"}, {"list", "extra"}, {"sync", "extra"}, {"push", "extra"}, {"push", "--force"}, {"push", "--only", "api"}, {"create", "one", "two"}, {"version", "--force"}, {"version", "--unknown"}, {"validate", "--workspace"}} {
+	for _, args := range [][]string{{"version", "extra"}, {"validate", "extra"}, {"list", "extra"}, {"tree", "extra"}, {"sync", "extra"}, {"sync", "--force"}, {"pull", "extra"}, {"pull", "--force"}, {"refresh", "change"}, {"push", "extra"}, {"push", "--force"}, {"push", "--only", "api"}, {"create", "one", "two"}, {"version", "--force"}, {"version", "--unknown"}, {"validate", "--workspace"}} {
 		t.Run(args[0]+"/"+args[len(args)-1], func(t *testing.T) {
 			if _, err := runOutput(t, args...); err == nil {
 				t.Fatal("unexpected arguments accepted")
@@ -351,9 +351,27 @@ func TestWorkspaceOverrideAndFlagsAfterCommand(t *testing.T) {
 	}
 }
 
+func TestTreeWorkspaceOverrideSelectsRequestedContext(t *testing.T) {
+	root, manifest := cliManagedChange(t)
+	base, err := runJSON[treeResult](t, "tree", "--json", "--workspace", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if base.Context != "base" || base.Change != "" || base.Workspace != root {
+		t.Fatalf("explicit base workspace selected wrong context: %+v", base)
+	}
+	change, err := runJSON[treeResult](t, "tree", "--json", "--workspace", manifest.Workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if change.Context != "change" || change.Change != manifest.Tag || change.Workspace != manifest.Workspace {
+		t.Fatalf("explicit Change workspace selected wrong context: %+v", change)
+	}
+}
+
 func TestDryRunCreatesNoResources(t *testing.T) {
 	root := cliWorkspace(t)
-	for _, args := range [][]string{{"bootstrap", "--dry-run", "--json", "--workspace", root}, {"create", "example-change", "--dry-run", "--json", "--workspace", root}, {"sync", "--force", "--dry-run", "--json", "--workspace", root}, {"push", "--dry-run", "--json", "--workspace", root}} {
+	for _, args := range [][]string{{"bootstrap", "--dry-run", "--json", "--workspace", root}, {"create", "example-change", "--dry-run", "--json", "--workspace", root}, {"sync", "--dry-run", "--json", "--workspace", root}, {"pull", "--dry-run", "--json", "--workspace", root}, {"push", "--dry-run", "--json", "--workspace", root}} {
 		result, err := runJSON[dryRunResult](t, args...)
 		if err != nil {
 			t.Fatal(err)
@@ -532,6 +550,15 @@ func TestChangeCommandsUseContextAwareSelection(t *testing.T) {
 				t.Fatalf("unexpected omitted-selection error: %v", err)
 			}
 		})
+		if command.name == "refresh" {
+			t.Run(command.name+"/explicit-rejected", func(t *testing.T) {
+				args := append(append([]string{}, command.args...), manifest.Tag, "--workspace", root)
+				if _, err := runOutput(t, args...); err == nil || err.Error() != "refresh takes no arguments" {
+					t.Fatalf("unexpected explicit refresh error: %v", err)
+				}
+			})
+			continue
+		}
 		for _, selector := range []string{manifest.Tag, manifest.Workspace} {
 			t.Run(command.name+"/explicit/"+filepath.Base(selector), func(t *testing.T) {
 				assertSelected(t, command.args, selector, true)

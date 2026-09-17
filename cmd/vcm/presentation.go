@@ -24,6 +24,30 @@ type commandResult struct {
 	Workspace string `json:"workspace"`
 }
 
+type treeRepositoryResult struct {
+	Name           string  `json:"name"`
+	Path           string  `json:"path"`
+	Available      bool    `json:"available"`
+	Branch         *string `json:"branch,omitempty"`
+	Clean          *bool   `json:"clean,omitempty"`
+	TrackedChanges *int    `json:"tracked_changes,omitempty"`
+	UntrackedFiles *int    `json:"untracked_files,omitempty"`
+	SyncState      *string `json:"sync_state,omitempty"`
+	SyncTarget     *string `json:"sync_target,omitempty"`
+	Ahead          *int    `json:"ahead,omitempty"`
+	Behind         *int    `json:"behind,omitempty"`
+	Cached         *bool   `json:"cached,omitempty"`
+	Detail         string  `json:"detail,omitempty"`
+	treeState      string
+}
+
+type treeResult struct {
+	Workspace    string                 `json:"workspace"`
+	Context      string                 `json:"context"`
+	Change       string                 `json:"change,omitempty"`
+	Repositories []treeRepositoryResult `json:"repositories"`
+}
+
 type createRepositoryResult struct {
 	Name string `json:"name"`
 	Path string `json:"path"`
@@ -262,6 +286,55 @@ func newStatusResult(m *vcm.Manifest, report vcm.StatusReport) statusResult {
 	}
 }
 
+func newTreeResult(report vcm.TreeReport) treeResult {
+	result := treeResult{Workspace: report.Workspace, Context: report.Context, Change: report.Change}
+	for _, repository := range report.Repositories {
+		item := treeRepositoryResult{Name: repository.Name, Path: repository.Path, Available: repository.Available, Detail: repository.Detail, treeState: repository.TreeState}
+		if repository.Available {
+			item.Branch = &repository.Branch
+			item.Clean = &repository.Clean
+			item.TrackedChanges = &repository.TrackedChanges
+			item.UntrackedFiles = &repository.UntrackedFiles
+			item.SyncState = &repository.SyncState
+			item.SyncTarget = &repository.SyncTarget
+			item.Ahead = &repository.Ahead
+			item.Behind = &repository.Behind
+			item.Cached = &repository.Cached
+		}
+		result.Repositories = append(result.Repositories, item)
+	}
+	return result
+}
+
+func treeState(repository treeRepositoryResult) string {
+	if !repository.Available {
+		return "unavailable"
+	}
+	if repository.treeState == "error" {
+		return "error"
+	}
+	if repository.Clean != nil && *repository.Clean {
+		return "clean"
+	}
+	return fmt.Sprintf("%d changed, %d untracked", *repository.TrackedChanges, *repository.UntrackedFiles)
+}
+
+func treeSync(repository treeRepositoryResult) string {
+	if !repository.Available || repository.SyncState == nil {
+		return "unavailable"
+	}
+	switch *repository.SyncState {
+	case "ahead":
+		return fmt.Sprintf("ahead %d", *repository.Ahead)
+	case "behind":
+		return fmt.Sprintf("behind %d", *repository.Behind)
+	case "diverged":
+		return fmt.Sprintf("diverged +%d/-%d", *repository.Ahead, *repository.Behind)
+	default:
+		return *repository.SyncState
+	}
+}
+
 func newMergeResult(m *vcm.Manifest) mergeResult {
 	repositories := make([]mergeRepositoryResult, 0, len(m.Repositories))
 	for _, repository := range m.Repositories {
@@ -449,6 +522,32 @@ func renderHumanStyled(out io.Writer, result any, style humanStyle) error {
 			issues = append(issues, []string{issue.Repository, issue.Kind, auditIssueTarget(issue), issue.Detail})
 		}
 		return renderTable(out, issues)
+	case treeResult:
+		rows := [][]string{tableHeader(style, "Repository", "Branch", "Tree", "Sync", "Path")}
+		for _, repository := range value.Repositories {
+			branch := "-"
+			if repository.Branch != nil && *repository.Branch != "" {
+				branch = *repository.Branch
+			}
+			tree, sync := treeState(repository), treeSync(repository)
+			treeColor := semanticYellow
+			if tree == "clean" {
+				treeColor = semanticGreen
+			} else if tree == "unavailable" {
+				treeColor = semanticNone
+			} else if tree == "error" {
+				treeColor = semanticRed
+			}
+			syncColor := semanticGreen
+			if sync != "current" {
+				syncColor = semanticYellow
+			}
+			if sync == "error" {
+				syncColor = semanticRed
+			}
+			rows = append(rows, []string{repository.Name, branch, style.tablePaint(treeColor, tree), style.tablePaint(syncColor, sync), repository.Path})
+		}
+		return renderTable(out, rows)
 	case createResult:
 		_, err := fmt.Fprintf(out, "%s Change %s with %d repositories.\n%s %s\n", style.paint(semanticGreen, "Created"), value.Tag, len(value.Repositories), style.paint(semanticCyanBold, "Workspace:"), value.Workspace)
 		return err
@@ -538,7 +637,7 @@ func renderHumanStyled(out io.Writer, result any, style humanStyle) error {
 		if _, err := fmt.Fprintf(out, "%s %s\n", style.paint(semanticYellow, "Dry run:"), value.Command); err != nil {
 			return err
 		}
-		if value.Command == "sync" || value.Command == "merge" || value.Command == "drop" {
+		if value.Command == "merge" || value.Command == "drop" {
 			fmt.Fprintf(out, "%s %t\n", style.paint(semanticCyanBold, "Force:"), value.Force)
 		}
 		if value.Command == "merge" {

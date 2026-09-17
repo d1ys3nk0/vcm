@@ -6,7 +6,8 @@ import (
 )
 
 // Refresh merges advanced canonical local trunks into the selected Change
-// worktrees. It never fetches; callers synchronize explicitly with vcm sync.
+// worktrees. It never fetches; callers update canonical trunks explicitly with
+// vcm pull.
 func (e *Engine) Refresh(m *Manifest) error {
 	if err := e.ensureCurrentSelection(m); err != nil {
 		return err

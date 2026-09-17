@@ -1435,21 +1435,16 @@ func TestMutationLock(t *testing.T) {
 		t.Fatal("lock accepted")
 	}
 }
-func TestSafeSyncAndForce(t *testing.T) {
+func TestSyncFetchesWithoutMovingLocalTrunk(t *testing.T) {
 	e := fixture(t, 1)
 	path := filepath.Join(e.Root, "repo0")
 	commitFile(t, path, "local.txt", "local\n")
 	before := mustGit(t, path, "rev-parse", "HEAD")
-	if err := e.Sync(); err == nil {
-		t.Fatal("sync discarded local commits")
-	}
-	e.Force = true
 	if err := e.Sync(); err != nil {
 		t.Fatal(err)
 	}
-	refs := mustGit(t, path, "for-each-ref", "--format=%(objectname)", "refs/vcm/recovery")
-	if !strings.Contains(refs, before) {
-		t.Fatal("local history not preserved")
+	if after := mustGit(t, path, "rev-parse", "HEAD"); after != before {
+		t.Fatalf("sync moved local trunk from %s to %s", before, after)
 	}
 }
 

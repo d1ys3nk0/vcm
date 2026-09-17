@@ -52,7 +52,7 @@ func (e *Engine) Drop(m *Manifest) error {
 		return fmt.Errorf("Change merge is incomplete; retry merge %s", m.Tag)
 	}
 	if m.State == "refreshing" {
-		return fmt.Errorf("Change refresh is incomplete; retry refresh %s", m.Tag)
+		return fmt.Errorf("Change refresh is incomplete; run vcm refresh from %s", m.Workspace)
 	}
 	for i := range m.Repositories {
 		r := &m.Repositories[i]
@@ -611,7 +611,7 @@ func (e *Engine) Merge(m *Manifest, messages ...string) error {
 		return fmt.Errorf("Change creation incomplete; retry create %s", m.Slug)
 	}
 	if m.State == "refreshing" {
-		return fmt.Errorf("Change refresh incomplete; retry refresh %s", m.Tag)
+		return fmt.Errorf("Change refresh incomplete; run vcm refresh from %s", m.Workspace)
 	}
 	if m.State == "dropping" {
 		return fmt.Errorf("Change is being dropped; retry drop %s", m.Tag)
