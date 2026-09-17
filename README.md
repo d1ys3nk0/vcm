@@ -50,23 +50,39 @@ Use `vcm tree` to inspect every checkout without contacting remotes. Run `vcm sy
 
 ## Commands
 
+Command groups describe their targets, not where commands must be invoked. Help always shows all three groups regardless of the current directory.
+
+### Base repository commands
+
 | Command | Purpose |
 | --- | --- |
-| `validate` | Check configuration and dependency graph |
-| `check` | Audit repository cleanliness, local worktrees, and local branches |
 | `bootstrap` | Clone missing repositories and validate existing origins |
-| `tree` | Show worktree cleanliness and local synchronization state for the root and every configured child |
+| `check` | Audit repository cleanliness, local worktrees, and local branches |
 | `sync [--dry-run]` | Fetch canonical remote trunks into cached `origin/<trunk>` refs without moving local branches |
 | `pull [--dry-run]` | Rebase canonical child trunks in dependency order and the root last |
 | `push [--dry-run]` | Validate every canonical trunk, then publish children in dependency order and the root last |
 | `create <slug> [--only names] [--except names]` | Synchronize origins and create a full or partial Change |
-| `list` | List recorded Changes |
+| `prune [--dry-run]` | Interactively clean retained checkouts and remove unexpected worktrees and branches |
+
+### Change worktree commands
+
+| Command | Purpose |
+| --- | --- |
 | `status [change]` | Inspect lifecycle, hooks, merge, and recovery state |
 | `refresh` | From inside a managed Change, merge advanced canonical local trunks into its worktrees without fetching |
 | `merge [change] [--message SUBJECT] [-f\|--force] [--skip-hooks PHASES] [--skip-git-hooks]` | Gate all repositories, then create one squash commit per changed repository |
 | `drop [change] [--force]` | Remove owned Change resources |
-| `prune [--dry-run]` | Interactively clean retained checkouts and remove unexpected worktrees and branches |
+
+### Shared commands
+
+| Command | Purpose |
+| --- | --- |
+| `validate` | Check configuration and dependency graph |
+| `tree` | Show cleanliness and local synchronization state for the root and every configured child in the selected base or Change checkout |
+| `list` | List recorded Changes |
 | `version` | Show version and source commit |
+
+### Options and behavior
 
 `--workspace PATH` selects a root or managed Change checkout; otherwise discovery walks upward for `vcm.yml` at a Git root. Commands produce concise human-readable text and tables by default. `--color MODE` accepts exactly `auto`, `always`, or `never` and defaults to `auto`. Automatic color is enabled independently for stdout and stderr when that destination is a terminal, `TERM` is not `dumb`, and `NO_COLOR` is empty or absent. `always` overrides terminal and environment detection, while `never` disables color. Every executable command accepts `--json` for a typed machine-readable result; JSON mode disables ANSI sequences on both stdout and stderr even with `--color always`, and help remains plain text. Mutating commands support `--dry-run`, which executes no hooks or mutations. Flags may appear before or after command arguments. `create --only core,web` selects exactly those children; `create --except devtools` selects every configured child except `devtools`. The root is always selected, the flags are mutually exclusive, and a selected repository whose dependency is not selected is rejected. Excluding every child creates a root-only Change. `status`, `merge`, and `drop` accept an optional managed Change tag or root workspace path; without one, they infer the Change from the current directory. `refresh` accepts no selector and is available only from inside its target managed Change. Slugs use lowercase kebab-case letters and digits; Change tags add a UTC timestamp and are also branch names.
 

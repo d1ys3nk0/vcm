@@ -323,7 +323,7 @@ func TestMissingCommandShowsHelp(t *testing.T) {
 	if err == nil || err.Error() != "command required" {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(output, "Commands:") || !strings.Contains(output, "create <slug>") {
+	if !strings.Contains(output, "Base repository commands:") || !strings.Contains(output, "create <slug>") {
 		t.Fatalf("missing command did not show help:\n%s", output)
 	}
 }

@@ -21,21 +21,27 @@ const helpText = `VCM manages a Git workspace root and its child repositories as
 Usage:
   vcm [global options] <command> [arguments]
 
-Commands:
-  validate             Check vcm.yml and the repository dependency graph.
-  check                Audit repository cleanliness, worktrees, and local branches.
+Command groups describe their targets, not where commands must be invoked.
+
+Base repository commands:
   bootstrap            Clone missing configured repositories and verify existing origins.
-  tree                 Show repository cleanliness and local synchronization state.
+  check                Audit repository cleanliness, worktrees, and local branches.
   sync                 Fetch configured remote trunks into local tracking refs.
   pull                 Rebase canonical local trunks onto their remote trunks.
   push                 Validate and publish child trunks, then the workspace root trunk.
   create <slug>        Synchronize origins and create an isolated Change workspace.
-  list                 List recorded Changes.
+  prune                Interactively clean retained checkouts and remove unexpected Git resources.
+
+Change worktree commands:
   status [change]      Show a Change's lifecycle, hooks, merge, and recovery state.
   refresh              Merge advanced local trunks into the current Change.
   merge [change]       Gate, squash-merge, then remove the owned Change worktrees.
   drop [change]        Remove the resources owned by a completed or discarded Change.
-  prune                Interactively clean retained checkouts and remove unexpected Git resources.
+
+Shared commands:
+  validate             Check vcm.yml and the repository dependency graph.
+  tree                 Show cleanliness and local synchronization for the selected base or Change checkout.
+  list                 List recorded Changes.
   version              Print the VCM version and source commit.
 
 Global options:
@@ -60,23 +66,28 @@ Change selection:
   worktree. Refresh is available only from inside the target managed Change.
 
 Examples:
-  vcm validate
+  Base repository:
   vcm bootstrap --workspace /work/product
-  vcm create improve-search
-  vcm create improve-search --only core,web
-  vcm create improve-search --except devtools
-  vcm status 260910120000-improve-search
   vcm check
-  vcm tree
   vcm sync
   vcm pull
   vcm push --dry-run
   vcm push
+  vcm create improve-search
+  vcm create improve-search --only core,web
+  vcm create improve-search --except devtools
   vcm prune --dry-run
   vcm prune
+
+  Change worktree:
+  vcm status 260910120000-improve-search
   vcm refresh
   vcm merge --dry-run --force --skip-hooks merge-after --skip-git-hooks
   vcm drop 260910120000-improve-search --force
+
+  Shared:
+  vcm validate
+  vcm tree
 
 Notes:
   Flags may appear before or after the command. Slugs use lowercase kebab-case letters
