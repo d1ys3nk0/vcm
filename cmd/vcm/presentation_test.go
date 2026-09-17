@@ -32,11 +32,16 @@ func TestListHumanOutputSortsAndMarksCurrentChange(t *testing.T) {
 		{Tag: "260902100000-newer", Slug: "newer", Workspace: newerWorkspace, State: "dropping", Repositories: []vcm.RepoState{{Removed: true}, {Removed: false}}},
 	}
 
-	output := renderHumanForTest(t, newListResults(manifests, filepath.Join(newerWorkspace, "repos", "api")))
+	summary := newListResults(manifests, filepath.Join(newerWorkspace, "repos", "api"))
+	entries := []overviewEntry{}
+	for _, item := range summary {
+		entries = append(entries, overviewEntry{listResult: item, BaseUpdate: "unknown", Operation: humanLifecycle(item.State)})
+	}
+	output := renderHumanForTest(t, overviewResult{Changes: entries, verbose: true})
 	if strings.Index(output, "260902100000-newer") > strings.Index(output, "260901100000-older") {
 		t.Fatalf("Changes are not newest first:\n%s", output)
 	}
-	for _, expected := range []string{"Change", "State", "Repos", "Age", "Workspace", "@", "1/2 removed", "1/2 merged"} {
+	for _, expected := range []string{"Change", "Operation", "Repos", "Age", "@", "unknown"} {
 		if !strings.Contains(output, expected) {
 			t.Errorf("list output is missing %q:\n%s", expected, output)
 		}
@@ -56,11 +61,11 @@ func TestListEmptyHumanAndJSONOutput(t *testing.T) {
 	if human != "No Changes.\n" {
 		t.Fatalf("unexpected empty list: %q", human)
 	}
-	result, err := runJSON[[]listResult](t, "list", "--json", "--workspace", root)
+	result, err := runJSON[overviewResult](t, "list", "--json", "--workspace", root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result) != 0 {
+	if len(result.Changes) != 0 {
 		t.Fatalf("expected empty JSON array, got %+v", result)
 	}
 }
@@ -170,14 +175,14 @@ func TestAgeBoundaries(t *testing.T) {
 	}
 }
 
-func TestTreePresentationContract(t *testing.T) {
+func TestInspectionPresentationContract(t *testing.T) {
 	report := vcm.TreeReport{Workspace: "/workspace", Context: "change", Change: "260910120000-example", Repositories: []vcm.TreeRepository{
-		{Name: "root", Path: "/change", Available: true, Branch: "change", Clean: false, TrackedChanges: 2, UntrackedFiles: 1, SyncState: "diverged", SyncTarget: "main", Ahead: 3, Behind: 4},
-		{Name: "api", Path: "/change/api", SyncState: "unavailable"},
+		{Name: "root", Path: "/change", Available: true, Branch: "change", Clean: false, TrackedChanges: 2, UntrackedFiles: 1, TreeState: "changed", SyncState: "diverged", SyncTarget: "main", Ahead: 3, Behind: 4},
+		{Name: "api", Path: "/change/api", TreeState: "missing", SyncState: "unavailable"},
 	}}
 	result := newTreeResult(report)
-	human := renderHumanForTest(t, result)
-	for _, expected := range []string{"Repository", "Branch", "Tree", "Sync", "Path", "2 changed, 1 untracked", "diverged +3/-4", "unavailable"} {
+	human := renderHumanForTest(t, inspectionResult{treeResult: result})
+	for _, expected := range []string{"Repository", "Branch", "Working tree", "Comparison target", "changed", "local main", "missing"} {
 		if !strings.Contains(human, expected) {
 			t.Fatalf("tree output omitted %q:\n%s", expected, human)
 		}

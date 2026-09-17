@@ -17,16 +17,16 @@ import (
 )
 
 type Engine struct {
-	Root           string
-	Config         Config
-	store          store
-	Out            io.Writer
-	Style          func(LogSemantic, string) string
-	Force          bool
-	MergeForce     bool
-	SkipMergeHooks map[string]bool
-	SkipGitHooks   bool
-	DryRun         bool
+	Root               string
+	Config             Config
+	store              store
+	Out                io.Writer
+	Style              func(LogSemantic, string) string
+	Force              bool
+	IgnoreHookFailures bool
+	SkipMergeHooks     map[string]bool
+	SkipHookGitHooks   bool
+	DryRun             bool
 }
 
 type RepositoryStatus struct {
@@ -66,13 +66,25 @@ type StatusReport struct {
 	PendingSync       []PendingSyncStatus
 }
 
+type PlanStep struct {
+	Phase      string `json:"phase"`
+	Repository string `json:"repository"`
+	Target     string `json:"target"`
+	Effect     string `json:"effect"`
+	Checkpoint string `json:"checkpoint"`
+}
+
 type OperationPlan struct {
+	Steps                 []PlanStep
+	Blockers              []string
+	Unverified            []string
 	Command               string
 	DryRun                bool
 	Force                 bool
+	IgnoreHookFailures    bool
 	DeletesIgnoredContent bool
 	SkippedHookPhases     []string
-	SkipGitHooks          bool
+	SkipHookGitHooks      bool
 	Tag                   string
 	Workspace             string
 	Resources             []string
@@ -89,7 +101,7 @@ func Open(path string, out io.Writer) (*Engine, error) {
 	}
 	c, e := readConfig(origin)
 	if e != nil {
-		return nil, e
+		return nil, failure("configuration", "", e)
 	}
 	common, e := commonDir(origin)
 	if e != nil {
@@ -98,14 +110,47 @@ func Open(path string, out io.Writer) (*Engine, error) {
 	return &Engine{Root: origin, Config: c, store: store{dir: filepath.Join(common, "vcm"), root: origin, config: c}, Out: out}, nil
 }
 func (e *Engine) All() ([]*Manifest, error) { return e.store.all() }
-func (e *Engine) Select(selector, cwd string) (*Manifest, error) {
+func (e *Engine) Select(selector, cwd string) (selected *Manifest, selectionErr error) {
+	defer classify(&selectionErr, "selection", "")
 	all, err := e.All()
 	if err != nil {
 		return nil, err
 	}
+	cwd, err = filepath.Abs(cwd)
+	if err != nil {
+		return nil, err
+	}
 	implicit := selector == ""
-	if selector == "" {
+	if !implicit {
+		for _, m := range all {
+			if m.Tag == selector {
+				return m, nil
+			}
+		}
+		if !filepath.IsAbs(selector) && !strings.ContainsAny(selector, `/\`) && !strings.HasPrefix(selector, ".") {
+			matches := []*Manifest{}
+			for _, m := range all {
+				if m.Slug == selector {
+					matches = append(matches, m)
+				}
+			}
+			if len(matches) == 1 {
+				return matches[0], nil
+			}
+			if len(matches) > 1 {
+				tags := []string{}
+				for _, m := range matches {
+					tags = append(tags, m.Tag)
+				}
+				return nil, failure("selection", "", fmt.Errorf("ambiguous Change %q; select an exact tag: %s", selector, strings.Join(tags, ", ")))
+			}
+		}
+	}
+	if implicit {
 		selector = cwd
+	}
+	if !filepath.IsAbs(selector) && (implicit || strings.ContainsAny(selector, `/\\`) || strings.HasPrefix(selector, ".")) {
+		selector = filepath.Join(cwd, selector)
 	}
 	abs, err := filepath.Abs(selector)
 	if err != nil {
@@ -131,7 +176,7 @@ func (e *Engine) Select(selector, cwd string) (*Manifest, error) {
 	if implicit {
 		return nil, fmt.Errorf("Change argument is required outside a managed Change worktree")
 	}
-	return nil, fmt.Errorf("no managed Change matches %q; specify a Change tag or workspace path", selector)
+	return nil, fmt.Errorf("no managed Change matches %q; specify a Change name, tag, or workspace path", selector)
 }
 func (e *Engine) Mutate(fn func() error) error {
 	if e.DryRun {
@@ -148,6 +193,9 @@ func (e *Engine) Mutate(fn func() error) error {
 	}
 	e.Config = current
 	e.store.config = current
+	if err := e.legacyMutationGuard(); err != nil {
+		return err
+	}
 	return fn()
 }
 func (e *Engine) Bootstrap() error {
@@ -247,51 +295,7 @@ func (e *Engine) backup(operation, path, label string, m *Manifest) error {
 	e.logOperationOutcome(operation, label, path, "", "created", LogChanged, " recovery backup %s; history %s", filename, ref)
 	return nil
 }
-func (e *Engine) syncForCreate(r Repository) (string, error) {
-	p := filepath.Join(e.Root, r.Path)
-	if err := validateOrigin(p, r); err != nil {
-		return "", err
-	}
-	if err := e.reconcileSync(r, p); err != nil {
-		return "", err
-	}
-	if err := clean(p); err != nil {
-		return "", err
-	}
-	refspec := "+refs/heads/" + r.Trunk + ":refs/remotes/origin/" + r.Trunk
-	if _, err := git(p, "fetch", "--no-tags", "origin", refspec); err != nil {
-		return "", err
-	}
-	target, err := git(p, "rev-parse", "refs/remotes/origin/"+r.Trunk)
-	if err != nil {
-		return "", err
-	}
-	trunk, err := git(p, "rev-parse", "refs/heads/"+r.Trunk)
-	if err != nil {
-		return "", err
-	}
-	complete, err := e.syncIntent(r, p, target, "rebase")
-	if err != nil {
-		return "", err
-	}
-	if _, err = git(p, "checkout", r.Trunk); err != nil {
-		return "", err
-	}
-	_, err = git(p, "rebase", target)
-	if err != nil {
-		return "", fmt.Errorf("repository %s sync: %w; repair interrupted Git operation before retry", r.Name, err)
-	}
-	if err = complete(); err != nil {
-		return "", err
-	}
-	after, err := head(p)
-	if err != nil {
-		return "", err
-	}
-	e.logOperationOutcome("create", r.Name, p, "", "synchronized", LogChanged, " trunk %s %s -> %s (rebase)", r.Trunk, abbreviateRevision(trunk), abbreviateRevision(after))
-	return after, nil
-}
-func (e *Engine) Sync() error {
+func (e *Engine) Fetch() error {
 	repositories, err := e.canonicalRepositories(false)
 	if err != nil {
 		return err
@@ -299,22 +303,22 @@ func (e *Engine) Sync() error {
 	for _, item := range repositories {
 		r := item.repository
 		if err := validateOrigin(item.path, r); err != nil {
-			return fmt.Errorf("repository %s sync: %w", r.Name, err)
+			return fmt.Errorf("repository %s fetch: %w", r.Name, err)
 		}
 		before, _ := git(item.path, "rev-parse", "--verify", "refs/remotes/origin/"+r.Trunk)
 		refspec := "+refs/heads/" + r.Trunk + ":refs/remotes/origin/" + r.Trunk
 		if _, err := git(item.path, "fetch", "--no-tags", "origin", refspec); err != nil {
-			return fmt.Errorf("repository %s sync: fetch remote trunk %s: %w", r.Name, r.Trunk, err)
+			return fmt.Errorf("repository %s fetch: fetch remote trunk %s: %w", r.Name, r.Trunk, err)
 		}
 		after, err := git(item.path, "rev-parse", "refs/remotes/origin/"+r.Trunk)
 		if err != nil {
-			return fmt.Errorf("repository %s sync: resolve cached remote trunk %s: %w", r.Name, r.Trunk, err)
+			return fmt.Errorf("repository %s fetch: resolve cached remote trunk %s: %w", r.Name, r.Trunk, err)
 		}
 		semantic, outcome := LogChanged, "fetched"
 		if before == after {
 			semantic, outcome = LogSuccess, "already current"
 		}
-		e.logOperationOutcome("sync", r.Name, item.path, "", outcome, semantic, " cached origin/%s at %s", r.Trunk, abbreviateRevision(after))
+		e.logOperationOutcome("fetch", r.Name, item.path, "", outcome, semantic, " cached origin/%s at %s", r.Trunk, abbreviateRevision(after))
 	}
 	return nil
 }
@@ -440,6 +444,9 @@ func (e *Engine) CreateSelected(slug, only, except string) (*Manifest, error) {
 	}
 	for _, m := range all {
 		if m.Slug == slug && m.State == "creating" {
+			if m.Version < 3 {
+				return m, legacyCreationError(m.Tag)
+			}
 			if err := e.ensureCurrentSelection(m); err != nil {
 				return m, err
 			}
@@ -458,7 +465,7 @@ func (e *Engine) CreateSelected(slug, only, except string) (*Manifest, error) {
 	if err != nil {
 		return nil, err
 	}
-	m := &Manifest{Version: 2, Tag: tag, Slug: slug, Workspace: path, Origin: e.Root, Config: e.Config, State: "creating", Hooks: map[string]HookState{}}
+	m := &Manifest{Version: 3, Tag: tag, Slug: slug, Workspace: path, Origin: e.Root, Config: e.Config, State: "creating", Hooks: map[string]HookState{}}
 	m.Repositories = append(m.Repositories, RepoState{Repository: Repository{Name: "root", URL: rootURL, Trunk: e.Config.Root.Trunk, Hooks: e.Config.Root.Hooks}, Origin: e.Root, Path: path})
 	for _, r := range selected {
 		m.Repositories = append(m.Repositories, RepoState{Repository: r, Origin: filepath.Join(e.Root, r.Path), Path: filepath.Join(path, r.Path)})
@@ -481,7 +488,7 @@ func (e *Engine) preflightCreate(m *Manifest) error {
 		if err := e.reconcileSync(r.Repository, r.Origin); err != nil {
 			return err
 		}
-		if err := clean(r.Origin); err != nil {
+		if _, err := localBaseline(r); err != nil {
 			return err
 		}
 		if _, err := os.Lstat(r.Path); !os.IsNotExist(err) {
@@ -497,7 +504,8 @@ func (e *Engine) preflightCreate(m *Manifest) error {
 	return nil
 }
 
-func (e *Engine) owned(m *Manifest, r *RepoState) error {
+func (e *Engine) owned(m *Manifest, r *RepoState) (errOut error) {
+	defer classify(&errOut, "ownership", r.Repository.Name)
 	expected := m.Workspace
 	if r.Repository.Name != "root" {
 		expected = filepath.Join(m.Workspace, r.Repository.Path)
@@ -531,26 +539,19 @@ func (e *Engine) owned(m *Manifest, r *RepoState) error {
 	return nil
 }
 func (e *Engine) resumeCreate(m *Manifest) error {
-	// Synchronize every selected repository before project code runs. Persist each
-	// baseline independently so a failure before worktree creation is resumable.
+	if m.Version < 3 {
+		return legacyCreationError(m.Tag)
+	}
+	// Record local baselines for all selected repositories before project hooks run.
 	for i := range m.Repositories {
 		r := &m.Repositories[i]
 		if r.Base == "" {
-			base, err := e.syncForCreate(r.Repository)
+			base, err := localBaseline(r)
 			if err != nil {
 				return err
 			}
-			if i == 0 {
-				current, err := readConfig(e.Root)
-				if err != nil {
-					return err
-				}
-				if !sameChangeConfig(current, m.Config) {
-					return fmt.Errorf("root configuration changed during synchronization; inspect and drop incomplete Change before retry")
-				}
-			}
 			r.Base = base
-			if err = e.store.save(m); err != nil {
+			if err := e.store.save(m); err != nil {
 				return err
 			}
 		}
@@ -560,7 +561,7 @@ func (e *Engine) resumeCreate(m *Manifest) error {
 		if err := e.hooksAt(m, root, HookCreateBefore, root.Origin, false); err != nil {
 			return err
 		}
-		base, err := head(root.Origin)
+		base, err := localBaseline(root)
 		if err != nil {
 			return err
 		}
@@ -576,7 +577,7 @@ func (e *Engine) resumeCreate(m *Manifest) error {
 				if err := e.hooksAt(m, r, HookCreateBefore, r.Origin, false); err != nil {
 					return err
 				}
-				base, err := head(r.Origin)
+				base, err := localBaseline(r)
 				if err != nil {
 					return err
 				}
@@ -641,7 +642,8 @@ func (e *Engine) hooks(m *Manifest, r *RepoState, phase string) error {
 	return e.hooksAt(m, r, phase, r.Path, phase != HookDropBefore)
 }
 
-func (e *Engine) hooksAt(m *Manifest, r *RepoState, phase, directory string, updateSource bool) error {
+func (e *Engine) hooksAt(m *Manifest, r *RepoState, phase, directory string, updateSource bool) (hookErr error) {
+	defer classify(&hookErr, "hook_failure", r.Repository.Name)
 	current, err := readConfig(m.Origin)
 	if err != nil {
 		return fmt.Errorf("read current hook configuration: %w", err)
@@ -688,14 +690,14 @@ func (e *Engine) hooksAt(m *Manifest, r *RepoState, phase, directory string, upd
 			continue
 		}
 		if old.Status == "running" {
-			return fmt.Errorf("repository %s hook %s interrupted; inspect effects and use status to locate manifest; mark outcome failed to retry idempotently", r.Repository.Name, key)
+			return failure("interruption", r.Repository.Name, fmt.Errorf("hook %s interrupted; inspect its external effects, then authorize retry with vcm recover %s --retry-hook %s --acknowledge-effects", key, m.Tag, key))
 		}
 		selected := make([]string, 0, len(m.Repositories))
 		for _, repository := range m.Repositories {
 			selected = append(selected, repository.Repository.Name)
 		}
 		hookEnvironment := append(os.Environ(), "VCM_CHANGE_TAG="+m.Tag, "VCM_CHANGE_SLUG="+m.Slug, "VCM_ROOT="+m.Workspace, "VCM_ROOT_ORIGIN="+m.Origin, "VCM_SELECTED_REPOSITORIES="+strings.Join(selected, ","), "VCM_REPOSITORY_NAME="+r.Repository.Name, "VCM_REPOSITORY_ORIGIN="+r.Origin, "VCM_REPOSITORY_PATH="+r.Path, "VCM_HOOK_PHASE="+phase, "VCM_HOOK_ID="+h.ID)
-		if e.SkipGitHooks && (phase == HookMergeBefore || phase == HookMergeAfter) {
+		if e.SkipHookGitHooks && (phase == HookMergeBefore || phase == HookMergeAfter) {
 			hookEnvironment, err = suppressGitHooks(hookEnvironment)
 			if err != nil {
 				return fmt.Errorf("repository %s phase %s hook %s Git configuration: %w", r.Repository.Name, phase, h.ID, err)
@@ -741,7 +743,7 @@ func (e *Engine) hooksAt(m *Manifest, r *RepoState, phase, directory string, upd
 		}
 		if processErr != nil {
 			var exitErr *exec.ExitError
-			if e.MergeForce && (phase == HookMergeBefore || phase == HookMergeAfter) && errors.As(processErr, &exitErr) {
+			if e.IgnoreHookFailures && (phase == HookMergeBefore || phase == HookMergeAfter) && errors.As(processErr, &exitErr) {
 				if revisionErr := e.recordHookRevision(r, phase, directory, updateSource, basePhase); revisionErr != nil {
 					return revisionErr
 				}
@@ -749,7 +751,7 @@ func (e *Engine) hooksAt(m *Manifest, r *RepoState, phase, directory string, upd
 				if saveErr := e.store.save(m); saveErr != nil {
 					return saveErr
 				}
-				if logErr := e.logHook(r.Repository.Name, phase, h.ID, directory, "failed", LogFailure, fmt.Sprintf(" (ignored by --force): %v", processErr)); logErr != nil {
+				if logErr := e.logHook(r.Repository.Name, phase, h.ID, directory, "failed", LogFailure, fmt.Sprintf(" (ignored by --ignore-hook-failures): %v", processErr)); logErr != nil {
 					return fmt.Errorf("repository %s phase %s hook %s diagnostic: %w", r.Repository.Name, phase, h.ID, logErr)
 				}
 				continue
@@ -913,17 +915,42 @@ func (e *Engine) CreatePlanSelected(slug, only, except string) (OperationPlan, e
 	if !slugPattern.MatchString(slug) {
 		return OperationPlan{}, fmt.Errorf("slug must use lowercase kebab-case with digits")
 	}
-	tag := newTag(slug)
-	path := changeWorkspace(e.Root, tag)
-	resources := []string{path}
+	m, err := e.createPlanManifest(slug, only, except)
+	if err != nil {
+		return OperationPlan{}, err
+	}
+	all, err := e.All()
+	if err != nil {
+		return OperationPlan{}, err
+	}
+	var blocker string
 	selected, err := e.selectedRepositories(only, except)
 	if err != nil {
 		return OperationPlan{}, err
 	}
-	for _, r := range selected {
-		resources = append(resources, filepath.Join(path, r.Path))
+	for _, existing := range all {
+		if existing.Slug != slug || existing.State == "dropped" {
+			continue
+		}
+		if existing.State == "creating" {
+			m = existing
+			if !sameSelection(m, selected) {
+				blocker = "create selection does not match interrupted Change"
+			}
+		} else {
+			blocker = "active Change already exists: " + existing.Tag
+		}
+		break
 	}
-	return OperationPlan{Command: "create", DryRun: true, Tag: tag, Workspace: path, Resources: resources}, nil
+	resources := []string{}
+	for _, r := range m.Repositories {
+		resources = append(resources, r.Path)
+	}
+	plan := e.enrichPlan(OperationPlan{Command: "create", DryRun: true, Tag: m.Tag, Workspace: m.Workspace, Resources: resources}, m)
+	if blocker != "" {
+		plan.Blockers = append(plan.Blockers, blocker)
+	}
+	return plan, nil
 }
 
 func (e *Engine) pendingSync() []PendingSyncStatus {

@@ -23,9 +23,9 @@ func withoutANSI(text string) string {
 func TestColorModeValidationAndPlacement(t *testing.T) {
 	root := cliWorkspace(t)
 	for _, args := range [][]string{
-		{"--color", "always", "validate", "--workspace", root},
-		{"validate", "--color", "always", "--workspace", root},
-		{"validate", "--color=always", "--workspace", root},
+		{"--color", "always", "check", "--config-only", "--workspace", root},
+		{"check", "--config-only", "--color", "always", "--workspace", root},
+		{"check", "--config-only", "--color=always", "--workspace", root},
 	} {
 		output, err := runOutput(t, args...)
 		if err != nil {
@@ -50,7 +50,7 @@ func TestColorAutoDetectionAndOverrides(t *testing.T) {
 	t.Setenv("TERM", "xterm-256color")
 	t.Setenv("NO_COLOR", "")
 
-	output, err := runOutput(t, "validate", "--workspace", root)
+	output, err := runOutput(t, "check", "--config-only", "--workspace", root)
 	if err != nil || !strings.Contains(output, ansiEscape) {
 		t.Fatalf("auto terminal output = %q, %v", output, err)
 	}
@@ -62,11 +62,11 @@ func TestColorAutoDetectionAndOverrides(t *testing.T) {
 			for key, value := range environment {
 				t.Setenv(key, value)
 			}
-			plain, runErr := runOutput(t, "validate", "--workspace", root)
+			plain, runErr := runOutput(t, "check", "--config-only", "--workspace", root)
 			if runErr != nil || strings.Contains(plain, ansiEscape) {
 				t.Fatalf("auto output = %q, %v", plain, runErr)
 			}
-			forced, runErr := runOutput(t, "validate", "--workspace", root, "--color=always")
+			forced, runErr := runOutput(t, "check", "--config-only", "--workspace", root, "--color=always")
 			if runErr != nil || !strings.Contains(forced, ansiEscape) {
 				t.Fatalf("always output = %q, %v", forced, runErr)
 			}
@@ -75,15 +75,15 @@ func TestColorAutoDetectionAndOverrides(t *testing.T) {
 	stdoutIsTerminal = func() bool { return false }
 	t.Setenv("TERM", "xterm-256color")
 	t.Setenv("NO_COLOR", "")
-	plain, err := runOutput(t, "validate", "--workspace", root)
+	plain, err := runOutput(t, "check", "--config-only", "--workspace", root)
 	if err != nil || strings.Contains(plain, ansiEscape) {
 		t.Fatalf("redirected auto output = %q, %v", plain, err)
 	}
-	forced, err := runOutput(t, "validate", "--workspace", root, "--color=always")
+	forced, err := runOutput(t, "check", "--config-only", "--workspace", root, "--color=always")
 	if err != nil || !strings.Contains(forced, ansiEscape) {
 		t.Fatalf("redirected always output = %q, %v", forced, err)
 	}
-	never, err := runOutput(t, "validate", "--workspace", root, "--color=never")
+	never, err := runOutput(t, "check", "--config-only", "--workspace", root, "--color=never")
 	if err != nil || strings.Contains(never, ansiEscape) {
 		t.Fatalf("never output = %q, %v", never, err)
 	}

@@ -19,81 +19,15 @@ type syncIntent struct {
 	Operation   string `json:"operation"`
 }
 
-func (e *Engine) syncIntent(r Repository, p, target, operation string) (func() error, error) {
-	filename := filepath.Join(e.store.dir, r.Name+".sync")
-	if err := secureDirectory(e.store.dir, true); err != nil {
-		return nil, err
-	}
-	current, err := head(p)
-	if err != nil {
-		return nil, err
-	}
-	trunk, err := git(p, "rev-parse", "refs/heads/"+r.Trunk)
-	if err != nil {
-		return nil, err
-	}
-	b, err := json.Marshal(syncIntent{Version: 1, TrunkBefore: trunk, Repository: r.Name, Path: p, Before: current, Target: target, Operation: operation})
-	if err != nil {
-		return nil, err
-	}
-	f, err := os.CreateTemp(e.store.dir, ".sync-*")
-	if err != nil {
-		return nil, err
-	}
-	defer os.Remove(f.Name())
-	if err = f.Chmod(0600); err == nil {
-		_, err = f.Write(b)
-	}
-	if err == nil {
-		err = f.Sync()
-	}
-	ce := f.Close()
-	if err == nil {
-		err = ce
-	}
-	if err != nil {
-		return nil, err
-	}
-	if err = os.Rename(f.Name(), filename); err != nil {
-		return nil, err
-	}
-	if err = syncDirectory(e.store.dir); err != nil {
-		return nil, err
-	}
-	return func() error {
-		if err := os.Remove(filename); err != nil {
-			return err
-		}
-		return syncDirectory(e.store.dir)
-	}, nil
-}
-
+// Legacy create synchronization journals are preserved for the previous binary.
 func (e *Engine) reconcileSync(r Repository, p string) error {
 	filename := filepath.Join(e.store.dir, r.Name+".sync")
-	old, err := readSync(filename)
-	if os.IsNotExist(err) {
+	if _, err := os.Lstat(filename); os.IsNotExist(err) {
 		return nil
-	}
-	if err != nil {
+	} else if err != nil {
 		return err
 	}
-	if old.Path != p || old.Repository != r.Name {
-		return fmt.Errorf("repository %s: synchronization ownership mismatch", r.Name)
-	}
-	current, err := head(p)
-	if err != nil {
-		return err
-	}
-	if current != old.Before && current != old.Target && current != old.TrunkBefore {
-		return fmt.Errorf("repository %s: interrupted synchronization has ambiguous revision; inspect %s and restore recorded before/target before retry", r.Name, filename)
-	}
-	if err = clean(p); err != nil {
-		return fmt.Errorf("repository %s: interrupted synchronization needs repair: %w", r.Name, err)
-	}
-	if err = os.Remove(filename); err != nil {
-		return err
-	}
-	return syncDirectory(e.store.dir)
+	return fmt.Errorf("repository %s: legacy synchronization journal %s; use the previous VCM binary to finish or discard the interrupted creation", r.Name, filename)
 }
 
 func syncDirectory(path string) error {

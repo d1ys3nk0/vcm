@@ -339,7 +339,7 @@ func TestMergeCommitHistoryPerRepository(t *testing.T) {
 	}
 }
 
-func TestMergeForceIgnoresOnlyCleanHookCommandFailures(t *testing.T) {
+func TestMergeIgnoreHookFailuresIgnoresOnlyCleanHookCommandFailures(t *testing.T) {
 	e := fixture(t, 1)
 	log := filepath.Join(filepath.Dir(e.Root), "merge-force-events")
 	t.Setenv("VCM_TEST_EVENTS", log)
@@ -352,7 +352,7 @@ func TestMergeForceIgnoresOnlyCleanHookCommandFailures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e.MergeForce = true
+	e.IgnoreHookFailures = true
 	if err = e.Merge(m); err != nil {
 		t.Fatal(err)
 	}
@@ -445,7 +445,7 @@ func TestMergeFinalizingRetryDeletesIgnoredContentAfterSafetyRepair(t *testing.T
 	}
 }
 
-func TestMergeForceKeepsDirtyHookFailureFatal(t *testing.T) {
+func TestMergeIgnoreHookFailuresKeepsDirtyHookFailureFatal(t *testing.T) {
 	e := fixture(t, 0)
 	e.Config.Root.Hooks = Hooks{HookMergeBefore: {{ID: "dirty", Shell: `printf 'dirty\n' > dirty.txt; false`}}}
 	saveContractConfig(t, e)
@@ -453,7 +453,7 @@ func TestMergeForceKeepsDirtyHookFailureFatal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e.MergeForce = true
+	e.IgnoreHookFailures = true
 	if err = e.Merge(m); err == nil || !strings.Contains(err.Error(), "dirty checkout") {
 		t.Fatalf("force ignored dirty hook failure: %v", err)
 	}
@@ -462,7 +462,7 @@ func TestMergeForceKeepsDirtyHookFailureFatal(t *testing.T) {
 	}
 }
 
-func TestMergeForceKeepsRunnerAndRevisionFailuresFatal(t *testing.T) {
+func TestMergeIgnoreHookFailuresKeepsRunnerAndRevisionFailuresFatal(t *testing.T) {
 	t.Run("configuration", func(t *testing.T) {
 		e := fixture(t, 0)
 		e.Config.Root.Hooks = Hooks{HookMergeBefore: {{ID: "retry", Shell: "false"}}}
@@ -475,7 +475,7 @@ func TestMergeForceKeepsRunnerAndRevisionFailuresFatal(t *testing.T) {
 			t.Fatal("expected initial hook failure")
 		}
 		put(t, filepath.Join(e.Root, "vcm.yml"), "not: [valid")
-		e.MergeForce = true
+		e.IgnoreHookFailures = true
 		if err = e.Merge(m); err == nil || !strings.Contains(err.Error(), "read current hook configuration") {
 			t.Fatalf("force ignored hook configuration failure: %v", err)
 		}
@@ -489,7 +489,7 @@ func TestMergeForceKeepsRunnerAndRevisionFailuresFatal(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		e.MergeForce = true
+		e.IgnoreHookFailures = true
 		if err = e.Merge(m); err == nil || !strings.Contains(err.Error(), "missing-shell") {
 			t.Fatalf("force ignored runner start failure: %v", err)
 		}
@@ -503,7 +503,7 @@ func TestMergeForceKeepsRunnerAndRevisionFailuresFatal(t *testing.T) {
 			t.Fatal(err)
 		}
 		e.Out = &failAfterOneWrite{}
-		e.MergeForce = true
+		e.IgnoreHookFailures = true
 		if err = e.Merge(m); err == nil || !strings.Contains(err.Error(), "output") {
 			t.Fatalf("force ignored hook output failure: %v", err)
 		}
@@ -515,7 +515,7 @@ func TestMergeForceKeepsRunnerAndRevisionFailuresFatal(t *testing.T) {
 			t.Fatal(err)
 		}
 		commitFile(t, e.Root, "drift.txt", "drift\n")
-		e.MergeForce = true
+		e.IgnoreHookFailures = true
 		want := fmt.Sprintf("repository root: target advanced from recorded base; run vcm refresh %s", m.Tag)
 		if err = e.Merge(m); err == nil || err.Error() != want {
 			t.Fatalf("force ignored target drift: %v", err)
@@ -631,7 +631,7 @@ func TestMergeFailedHookRetriesUnlessPhaseSkipped(t *testing.T) {
 	}
 }
 
-func TestMergeSkipGitHooksAppliesOnlyInsideLifecycleHook(t *testing.T) {
+func TestMergeSkipHookGitHooksAppliesOnlyInsideLifecycleHook(t *testing.T) {
 	for _, suppress := range []bool{false, true} {
 		t.Run(fmt.Sprintf("suppress-%t", suppress), func(t *testing.T) {
 			if suppress {
@@ -660,7 +660,7 @@ func TestMergeSkipGitHooksAppliesOnlyInsideLifecycleHook(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			e.SkipGitHooks = suppress
+			e.SkipHookGitHooks = suppress
 			err = e.Merge(m)
 			if !suppress {
 				if err == nil || !strings.Contains(err.Error(), "dirty checkout") {
@@ -678,14 +678,14 @@ func TestMergeSkipGitHooksAppliesOnlyInsideLifecycleHook(t *testing.T) {
 	}
 }
 
-func TestMergeSkipGitHooksRejectsMalformedInheritedConfig(t *testing.T) {
+func TestMergeSkipHookGitHooksRejectsMalformedInheritedConfig(t *testing.T) {
 	_, err := suppressGitHooks([]string{"PATH=/bin", "GIT_CONFIG_COUNT=invalid"})
 	if err == nil || !strings.Contains(err.Error(), `invalid GIT_CONFIG_COUNT "invalid"`) {
 		t.Fatalf("malformed inherited Git configuration was not rejected: %v", err)
 	}
 }
 
-func TestMergeForcePreservesOwnershipConflictAndIncompleteLifecycleSafety(t *testing.T) {
+func TestMergeIgnoreHookFailuresPreservesOwnershipConflictAndIncompleteLifecycleSafety(t *testing.T) {
 	t.Run("ownership", func(t *testing.T) {
 		e := fixture(t, 0)
 		m, err := e.Create("force-ownership")
@@ -694,7 +694,7 @@ func TestMergeForcePreservesOwnershipConflictAndIncompleteLifecycleSafety(t *tes
 		}
 		ownedPath := m.Repositories[0].Path
 		m.Repositories[0].Path = filepath.Join(filepath.Dir(ownedPath), "wrong-workspace")
-		e.MergeForce = true
+		e.IgnoreHookFailures = true
 		if err = e.Merge(m); err == nil || !strings.Contains(err.Error(), "ownership paths mismatch") {
 			t.Fatalf("force ignored ownership failure: %v", err)
 		}
@@ -713,7 +713,7 @@ func TestMergeForcePreservesOwnershipConflictAndIncompleteLifecycleSafety(t *tes
 		}
 		mustGit(t, m.Workspace, "reset", "--hard", commonBase)
 		commitFile(t, m.Workspace, "conflict.txt", "source\n")
-		e.MergeForce = true
+		e.IgnoreHookFailures = true
 		if err = e.Merge(m); err == nil || !strings.Contains(err.Error(), "conflict after merge gate") {
 			t.Fatalf("force ignored merge conflict: %v", err)
 		}
@@ -729,7 +729,7 @@ func TestMergeForcePreservesOwnershipConflictAndIncompleteLifecycleSafety(t *tes
 				t.Fatal(err)
 			}
 			m.State = state
-			e.MergeForce = true
+			e.IgnoreHookFailures = true
 			if err = e.Merge(m); err == nil || !strings.Contains(strings.ToLower(err.Error()), strings.TrimSuffix(state, "ing")) {
 				t.Fatalf("force accepted incomplete %s lifecycle: %v", state, err)
 			}
@@ -834,7 +834,7 @@ func TestRefreshRejectsAdvancedTargetWhileConflictIsUnresolved(t *testing.T) {
 		t.Fatalf("refresh conflict not preserved: %v", err)
 	}
 	commitFile(t, r.Origin, "advanced.txt", "advanced\n")
-	if err = e.Refresh(m); err == nil || !strings.Contains(err.Error(), "recorded refresh is incomplete") || !strings.Contains(err.Error(), "dirty checkout") {
+	if err = e.Refresh(m); err == nil || !strings.Contains(err.Error(), "recorded refresh is incomplete") || !strings.Contains(err.Error(), "unfinished Git operation") {
 		t.Fatalf("unresolved refresh was not rejected with actionable diagnostics: %v", err)
 	}
 }
@@ -1440,7 +1440,7 @@ func TestSyncFetchesWithoutMovingLocalTrunk(t *testing.T) {
 	path := filepath.Join(e.Root, "repo0")
 	commitFile(t, path, "local.txt", "local\n")
 	before := mustGit(t, path, "rev-parse", "HEAD")
-	if err := e.Sync(); err != nil {
+	if err := e.Fetch(); err != nil {
 		t.Fatal(err)
 	}
 	if after := mustGit(t, path, "rev-parse", "HEAD"); after != before {

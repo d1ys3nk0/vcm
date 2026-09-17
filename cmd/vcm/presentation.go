@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -38,7 +39,7 @@ type treeRepositoryResult struct {
 	Behind         *int    `json:"behind,omitempty"`
 	Cached         *bool   `json:"cached,omitempty"`
 	Detail         string  `json:"detail,omitempty"`
-	treeState      string
+	TreeState      string  `json:"working_tree"`
 }
 
 type treeResult struct {
@@ -75,6 +76,8 @@ type listResult struct {
 }
 
 type statusRepositoryResult struct {
+	Merged         bool   `json:"merged"`
+	Removed        bool   `json:"removed"`
 	Name           string `json:"name"`
 	Path           string `json:"path"`
 	Status         string `json:"status"`
@@ -166,15 +169,19 @@ type versionResult struct {
 }
 
 type dryRunResult struct {
-	Command               string   `json:"command"`
-	DryRun                bool     `json:"dry_run"`
-	Force                 bool     `json:"force"`
-	DeletesIgnoredContent bool     `json:"deletes_ignored_content"`
-	SkippedHookPhases     []string `json:"skipped_hook_phases"`
-	SkipGitHooks          bool     `json:"skip_git_hooks"`
-	Tag                   string   `json:"tag,omitempty"`
-	Workspace             string   `json:"workspace,omitempty"`
-	Resources             []string `json:"resources"`
+	IgnoreHookFailures    bool           `json:"ignore_hook_failures,omitempty"`
+	Steps                 []vcm.PlanStep `json:"steps"`
+	Blockers              []string       `json:"blockers"`
+	Unverified            []string       `json:"unverified"`
+	Command               string         `json:"command"`
+	DryRun                bool           `json:"dry_run"`
+	Force                 bool           `json:"force,omitempty"`
+	DeletesIgnoredContent bool           `json:"deletes_ignored_content"`
+	SkippedHookPhases     []string       `json:"skipped_hook_phases"`
+	SkipHookGitHooks      bool           `json:"skip_hook_git_hooks"`
+	Tag                   string         `json:"tag,omitempty"`
+	Workspace             string         `json:"workspace,omitempty"`
+	Resources             []string       `json:"resources"`
 }
 
 type errorResult struct {
@@ -254,7 +261,7 @@ func newStatusResult(m *vcm.Manifest, report vcm.StatusReport) statusResult {
 	for _, repository := range report.Repositories {
 		state, detail := repositoryStatus(repository)
 		repositories = append(repositories, statusRepositoryResult{
-			Name: repository.Name, Path: repository.Path, Status: state, Head: repository.Source, Target: repository.Target,
+			Name: repository.Name, Path: repository.Path, Status: state, Merged: repository.Merged, Removed: repository.Removed, Head: repository.Source, Target: repository.Target,
 			RecordedTarget: repository.RecordedTarget, RecoveryState: repository.RecoveryState,
 			Intent: repository.Intent, Error: detail, TargetChanged: repository.TargetChanged,
 		})
@@ -289,50 +296,25 @@ func newStatusResult(m *vcm.Manifest, report vcm.StatusReport) statusResult {
 func newTreeResult(report vcm.TreeReport) treeResult {
 	result := treeResult{Workspace: report.Workspace, Context: report.Context, Change: report.Change}
 	for _, repository := range report.Repositories {
-		item := treeRepositoryResult{Name: repository.Name, Path: repository.Path, Available: repository.Available, Detail: repository.Detail, treeState: repository.TreeState}
+		item := treeRepositoryResult{Name: repository.Name, Path: repository.Path, Available: repository.Available, Detail: repository.Detail, TreeState: repository.TreeState}
 		if repository.Available {
 			item.Branch = &repository.Branch
-			item.Clean = &repository.Clean
-			item.TrackedChanges = &repository.TrackedChanges
-			item.UntrackedFiles = &repository.UntrackedFiles
+			if repository.TreeState != "error" {
+				item.Clean = &repository.Clean
+				item.TrackedChanges = &repository.TrackedChanges
+				item.UntrackedFiles = &repository.UntrackedFiles
+			}
 			item.SyncState = &repository.SyncState
 			item.SyncTarget = &repository.SyncTarget
-			item.Ahead = &repository.Ahead
-			item.Behind = &repository.Behind
+			if repository.SyncState != "error" && repository.SyncState != "target missing" {
+				item.Ahead = &repository.Ahead
+				item.Behind = &repository.Behind
+			}
 			item.Cached = &repository.Cached
 		}
 		result.Repositories = append(result.Repositories, item)
 	}
 	return result
-}
-
-func treeState(repository treeRepositoryResult) string {
-	if !repository.Available {
-		return "unavailable"
-	}
-	if repository.treeState == "error" {
-		return "error"
-	}
-	if repository.Clean != nil && *repository.Clean {
-		return "clean"
-	}
-	return fmt.Sprintf("%d changed, %d untracked", *repository.TrackedChanges, *repository.UntrackedFiles)
-}
-
-func treeSync(repository treeRepositoryResult) string {
-	if !repository.Available || repository.SyncState == nil {
-		return "unavailable"
-	}
-	switch *repository.SyncState {
-	case "ahead":
-		return fmt.Sprintf("ahead %d", *repository.Ahead)
-	case "behind":
-		return fmt.Sprintf("behind %d", *repository.Behind)
-	case "diverged":
-		return fmt.Sprintf("diverged +%d/-%d", *repository.Ahead, *repository.Behind)
-	default:
-		return *repository.SyncState
-	}
 }
 
 func newMergeResult(m *vcm.Manifest) mergeResult {
@@ -360,7 +342,7 @@ func newDropResult(m *vcm.Manifest) dropResult {
 }
 
 func newDryRunResult(plan vcm.OperationPlan) dryRunResult {
-	return dryRunResult{Command: plan.Command, DryRun: plan.DryRun, Force: plan.Force, DeletesIgnoredContent: plan.DeletesIgnoredContent, SkippedHookPhases: append([]string{}, plan.SkippedHookPhases...), SkipGitHooks: plan.SkipGitHooks, Tag: plan.Tag, Workspace: plan.Workspace, Resources: append([]string{}, plan.Resources...)}
+	return dryRunResult{Steps: plan.Steps, Blockers: plan.Blockers, Unverified: plan.Unverified, Command: plan.Command, DryRun: plan.DryRun, Force: plan.Force, IgnoreHookFailures: plan.IgnoreHookFailures, DeletesIgnoredContent: plan.DeletesIgnoredContent, SkippedHookPhases: append([]string{}, plan.SkippedHookPhases...), SkipHookGitHooks: plan.SkipHookGitHooks, Tag: plan.Tag, Workspace: plan.Workspace, Resources: append([]string{}, plan.Resources...)}
 }
 
 func renderJSON(out io.Writer, result any) error {
@@ -472,6 +454,16 @@ func renderHuman(out io.Writer, result any) error {
 
 func renderHumanStyled(out io.Writer, result any, style humanStyle) error {
 	switch value := result.(type) {
+	case inspectionResult:
+		return renderInspection(out, value, style)
+	case overviewResult:
+		return renderOverview(out, value, style)
+	case vcm.InitResult:
+		_, err := fmt.Fprintf(out, "Configuration: %s\nTrunk: %s\nConfigure children, then run vcm bootstrap.\n", value.Path, value.Trunk)
+		return err
+	case vcm.RecoveryResult:
+		_, err := fmt.Fprintf(out, "Hook: %s\nRetry: %s\n", value.Hook, value.RetryCommand)
+		return err
 	case validateResult:
 		_, err := fmt.Fprintf(out, "Configuration %s.\n%s %s\n", style.paint(semanticGreen, "valid"), style.paint(semanticCyanBold, "Workspace:"), value.Workspace)
 		return err
@@ -522,54 +514,9 @@ func renderHumanStyled(out io.Writer, result any, style humanStyle) error {
 			issues = append(issues, []string{issue.Repository, issue.Kind, auditIssueTarget(issue), issue.Detail})
 		}
 		return renderTable(out, issues)
-	case treeResult:
-		rows := [][]string{tableHeader(style, "Repository", "Branch", "Tree", "Sync", "Path")}
-		for _, repository := range value.Repositories {
-			branch := "-"
-			if repository.Branch != nil && *repository.Branch != "" {
-				branch = *repository.Branch
-			}
-			tree, sync := treeState(repository), treeSync(repository)
-			treeColor := semanticYellow
-			if tree == "clean" {
-				treeColor = semanticGreen
-			} else if tree == "unavailable" {
-				treeColor = semanticNone
-			} else if tree == "error" {
-				treeColor = semanticRed
-			}
-			syncColor := semanticGreen
-			if sync != "current" {
-				syncColor = semanticYellow
-			}
-			if sync == "error" {
-				syncColor = semanticRed
-			}
-			rows = append(rows, []string{repository.Name, branch, style.tablePaint(treeColor, tree), style.tablePaint(syncColor, sync), repository.Path})
-		}
-		return renderTable(out, rows)
 	case createResult:
 		_, err := fmt.Fprintf(out, "%s Change %s with %d repositories.\n%s %s\n", style.paint(semanticGreen, "Created"), value.Tag, len(value.Repositories), style.paint(semanticCyanBold, "Workspace:"), value.Workspace)
 		return err
-	case []listResult:
-		if len(value) == 0 {
-			_, err := fmt.Fprintln(out, "No Changes.")
-			return err
-		}
-		rows := [][]string{tableHeader(style, "", "Change", "State", "Repos", "Age", "Workspace")}
-		now := time.Now().UTC()
-		for _, change := range value {
-			marker := ""
-			if change.current {
-				marker = "@"
-			}
-			repos := fmt.Sprintf("%d/%d merged", change.MergedCount, change.RepositoryCount)
-			if change.State == "dropping" || change.State == "dropped" {
-				repos = fmt.Sprintf("%d/%d removed", change.RemovedCount, change.RepositoryCount)
-			}
-			rows = append(rows, []string{marker, change.Tag, tableStatus(style, change.State), repos, age(now, change.CreatedAt), change.Workspace})
-		}
-		return renderTable(out, rows)
 	case statusResult:
 		if _, err := fmt.Fprintf(out, "%s %s\n%s %s\n%s %s\n%s %s\n\n", style.paint(semanticCyanBold, "Change:"), value.Tag, style.paint(semanticCyanBold, "State:"), style.paint(statusColor(value.State), value.State), style.paint(semanticCyanBold, "Created:"), value.CreatedAt.Format(time.RFC3339), style.paint(semanticCyanBold, "Workspace:"), value.Workspace); err != nil {
 			return err
@@ -634,16 +581,26 @@ func renderHumanStyled(out io.Writer, result any, style humanStyle) error {
 		_, err := fmt.Fprintf(out, "vcm %s (%s)\n", value.Version, value.Commit)
 		return err
 	case dryRunResult:
+		for _, step := range value.Steps {
+			fmt.Fprintf(out, "[%s] %s / %s: %s (%s)\n", step.Checkpoint, step.Repository, step.Phase, step.Effect, step.Target)
+		}
+		for _, blocker := range value.Blockers {
+			fmt.Fprintf(out, "Blocked: %s\n", blocker)
+		}
+		for _, unverified := range value.Unverified {
+			fmt.Fprintf(out, "Unverified: %s\n", unverified)
+		}
 		if _, err := fmt.Fprintf(out, "%s %s\n", style.paint(semanticYellow, "Dry run:"), value.Command); err != nil {
 			return err
 		}
-		if value.Command == "merge" || value.Command == "drop" {
+		if value.Command == "drop" {
 			fmt.Fprintf(out, "%s %t\n", style.paint(semanticCyanBold, "Force:"), value.Force)
 		}
 		if value.Command == "merge" {
+			fmt.Fprintf(out, "Ignore hook failures: %t\n", value.IgnoreHookFailures)
 			fmt.Fprintf(out, "%s %t\n", style.paint(semanticCyanBold, "Delete ignored content:"), value.DeletesIgnoredContent)
 			fmt.Fprintf(out, "%s %s\n", style.paint(semanticCyanBold, "Skipped hook phases:"), strings.Join(value.SkippedHookPhases, ","))
-			fmt.Fprintf(out, "%s %t\n", style.paint(semanticCyanBold, "Git hooks suppressed:"), value.SkipGitHooks)
+			fmt.Fprintf(out, "%s %t\n", style.paint(semanticCyanBold, "Git hooks inside lifecycle hooks suppressed:"), value.SkipHookGitHooks)
 		}
 		if value.Tag != "" {
 			fmt.Fprintf(out, "%s %s\n", style.paint(semanticCyanBold, "Change:"), value.Tag)
@@ -676,11 +633,32 @@ func writeError(out io.Writer, jsonOutput bool, err error) {
 }
 
 func writeErrorStyled(out io.Writer, jsonOutput bool, err error, style humanStyle) {
+	var detail *operationError
+	if !errors.As(err, &detail) {
+		detail = &operationError{Code: "usage", Message: err.Error()}
+		var typed *vcm.Error
+		if errors.As(err, &typed) {
+			detail.Code, detail.Repository = typed.Code, typed.Repository
+		}
+	}
 	if jsonOutput {
-		result := errorResult{}
-		result.Error.Message = err.Error()
-		_ = renderJSON(out, result)
+		_ = renderJSON(out, struct {
+			Error *operationError `json:"error"`
+		}{detail})
 		return
 	}
-	fmt.Fprintln(out, style.paint(semanticRed, "vcm:"), err)
+	fmt.Fprintln(out, style.paint(semanticRed, "vcm:"), detail.Message)
+	for _, p := range detail.Progress {
+		if p.Publication != "" {
+			fmt.Fprintf(out, "%s: publication %s\n", p.Repository, p.Publication)
+			continue
+		}
+		fmt.Fprintf(out, "%s: integration %s; cleanup %s\n", p.Repository, p.Integration, p.Cleanup)
+	}
+	if detail.Finalization != "" {
+		fmt.Fprintln(out, "Finalization:", detail.Finalization)
+	}
+	if detail.NextAction != "" {
+		fmt.Fprintln(out, detail.NextAction)
+	}
 }

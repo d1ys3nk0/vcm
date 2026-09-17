@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -15,86 +14,6 @@ import (
 
 var version = "0.0.1-dev"
 var commit = "unknown"
-
-const helpText = `VCM manages a Git workspace root and its child repositories as one Change.
-
-Usage:
-  vcm [global options] <command> [arguments]
-
-Command groups describe their targets, not where commands must be invoked.
-
-Base repository commands:
-  bootstrap            Clone missing configured repositories and verify existing origins.
-  check                Audit repository cleanliness, worktrees, and local branches.
-  sync                 Fetch configured remote trunks into local tracking refs.
-  pull                 Rebase canonical local trunks onto their remote trunks.
-  push                 Validate and publish child trunks, then the workspace root trunk.
-  create <slug>        Synchronize origins and create an isolated Change workspace.
-  prune                Interactively clean retained checkouts and remove unexpected Git resources.
-
-Change worktree commands:
-  status [change]      Show a Change's lifecycle, hooks, merge, and recovery state.
-  refresh              Merge advanced local trunks into the current Change.
-  merge [change]       Gate, squash-merge, then remove the owned Change worktrees.
-  drop [change]        Remove the resources owned by a completed or discarded Change.
-
-Shared commands:
-  validate             Check vcm.yml and the repository dependency graph.
-  tree                 Show cleanliness and local synchronization for the selected base or Change checkout.
-  list                 List recorded Changes.
-  version              Print the VCM version and source commit.
-
-Global options:
-  --workspace PATH     Workspace root. By default, VCM searches upward from the current
-                       directory for vcm.yml at a Git root.
-  --json               Emit machine-readable JSON to stdout.
-  --color MODE         Color human output: auto, always, or never (default: auto).
-  --dry-run            Show the operation plan without changing files or running hooks.
-                       Supported by bootstrap, sync, pull, push, create, refresh, merge, drop, and prune.
-  -f, --force          For merge, ignore clean lifecycle hook command failures. For drop,
-                       preserve recovery backups before discarding changes.
-  --only NAMES         For create, include exactly these comma-separated child repositories.
-  --except NAMES       For create, exclude these comma-separated child repositories.
-  --message SUBJECT    Merge commit subject; defaults to "feat: <manifest slug>".
-  --skip-hooks PHASES  For merge, skip exact comma-separated merge-before and/or merge-after phases.
-  --skip-git-hooks     For merge lifecycle hooks, run Git with core.hooksPath=/dev/null.
-  -h, --help           Show this help.
-
-Change selection:
-  The optional [change] is a managed Change tag or its root workspace path. If it is
-  omitted, status, merge, and drop infer the Change when run anywhere inside its managed
-  worktree. Refresh is available only from inside the target managed Change.
-
-Examples:
-  Base repository:
-  vcm bootstrap --workspace /work/product
-  vcm check
-  vcm sync
-  vcm pull
-  vcm push --dry-run
-  vcm push
-  vcm create improve-search
-  vcm create improve-search --only core,web
-  vcm create improve-search --except devtools
-  vcm prune --dry-run
-  vcm prune
-
-  Change worktree:
-  vcm status 260910120000-improve-search
-  vcm refresh
-  vcm merge --dry-run --force --skip-hooks merge-after --skip-git-hooks
-  vcm drop 260910120000-improve-search --force
-
-  Shared:
-  vcm validate
-  vcm tree
-
-Notes:
-  Flags may appear before or after the command. Slugs use lowercase kebab-case letters
-  and digits. Commands that change state should be previewed with --dry-run; merge does
-  not fetch, pull, or push. After local integration is checkpointed, merge deletes ignored
-  content with the owned worktrees without requiring --force or creating recovery backups.
-`
 
 var stdinIsTerminal = func() bool {
 	info, err := os.Stdin.Stat()
@@ -109,52 +28,16 @@ func (e incompleteResultError) Error() string {
 }
 
 func run(args []string) error {
-	flags := flag.NewFlagSet("vcm", flag.ContinueOnError)
-	flags.SetOutput(io.Discard)
-	flags.Usage = func() {}
-	workspace, only, except, message, skipHooks := "", "", "", "", ""
-	color := colorAuto
-	jsonOutput, dry, force, skipGitHooks := false, false, false, false
-	flags.StringVar(&workspace, "workspace", "", "workspace root")
-	flags.BoolVar(&jsonOutput, "json", false, "machine-readable output")
-	flags.Var(&color, "color", "color human output: auto, always, or never")
-	flags.BoolVar(&dry, "dry-run", false, "show operation plan")
-	flags.BoolVar(&force, "force", false, "preserve recovery backups and discard changes")
-	flags.BoolVar(&force, "f", false, "force the selected operation")
-	flags.StringVar(&only, "only", "", "selected child repositories")
-	flags.StringVar(&except, "except", "", "excluded child repositories")
-	flags.StringVar(&message, "message", "", "merge commit subject")
-	flags.StringVar(&skipHooks, "skip-hooks", "", "merge hook phases to skip")
-	flags.BoolVar(&skipGitHooks, "skip-git-hooks", false, "suppress Git hooks inside merge lifecycle hooks")
-	// Permit global options before or after the command using the standard flag parser.
-	options := []string{}
-	positionals := []string{}
-	for i := 0; i < len(args); i++ {
-		if strings.HasPrefix(args[i], "-") {
-			options = append(options, args[i])
-			if args[i] == "--workspace" || args[i] == "-workspace" || args[i] == "--color" || args[i] == "-color" || args[i] == "--only" || args[i] == "-only" || args[i] == "--except" || args[i] == "-except" || args[i] == "--message" || args[i] == "-message" || args[i] == "--skip-hooks" || args[i] == "-skip-hooks" {
-				i++
-				if i == len(args) {
-					return fmt.Errorf("%s requires a value", options[len(options)-1])
-				}
-				options = append(options, args[i])
-			}
-		} else {
-			positionals = append(positionals, args[i])
-		}
-	}
-	if err := flags.Parse(options); err != nil {
-		if err == flag.ErrHelp {
-			fmt.Fprint(os.Stderr, helpText)
-			return nil
-		}
+	opts, command, arg, err := parseArguments(args)
+	if err != nil {
 		return err
 	}
-	if len(positionals) == 0 {
-		fmt.Fprint(os.Stderr, helpText)
-		return fmt.Errorf("command required")
+	if opts.help {
+		fmt.Fprint(os.Stderr, commandHelp(command))
+		return nil
 	}
-	command := positionals[0]
+	workspace, only, except, message, skipHooks := opts.workspace, opts.only, opts.except, opts.message, opts.skipHooks
+	color, jsonOutput, dry, force, skipGitHooks := opts.color, opts.json, opts.dry, opts.force, opts.skipHookGit
 	stdoutStyle := humanStyle{enabled: colorEnabled(color, stdoutIsTerminal(), jsonOutput)}
 	stderrStyle := humanStyle{enabled: colorEnabled(color, stderrIsTerminal(), jsonOutput)}
 	output := func(result any) error {
@@ -163,55 +46,32 @@ func run(args []string) error {
 		}
 		return renderHumanStyled(os.Stdout, result, stdoutStyle)
 	}
-	if len(positionals) > 2 {
-		return fmt.Errorf("too many arguments")
-	}
-	if command != "create" && command != "merge" && command != "drop" && command != "status" && len(positionals) > 1 {
-		return fmt.Errorf("%s takes no arguments", command)
-	}
-	selectionFlags := map[string]bool{}
-	flags.Visit(func(f *flag.Flag) { selectionFlags[f.Name] = true })
-	forceSet := selectionFlags["force"] || selectionFlags["f"]
-	if forceSet && command != "merge" && command != "drop" {
-		return fmt.Errorf("--force is only supported by merge and drop")
-	}
-	if (selectionFlags["only"] || selectionFlags["except"]) && command != "create" {
-		return fmt.Errorf("--only and --except are only supported by create")
-	}
-	if selectionFlags["only"] && selectionFlags["except"] {
-		return fmt.Errorf("--only and --except are mutually exclusive")
-	}
-	if selectionFlags["message"] && command != "merge" {
-		return fmt.Errorf("--message is only supported by merge")
-	}
-	if selectionFlags["skip-hooks"] && command != "merge" {
-		return fmt.Errorf("--skip-hooks is only supported by merge")
-	}
-	if selectionFlags["skip-git-hooks"] && command != "merge" {
-		return fmt.Errorf("--skip-git-hooks is only supported by merge")
-	}
-	if selectionFlags["only"] && only == "" {
-		return fmt.Errorf("--only contains a blank repository name")
-	}
-	if selectionFlags["except"] && except == "" {
-		return fmt.Errorf("--except contains a blank repository name")
-	}
-	if dry && command != "bootstrap" && command != "sync" && command != "pull" && command != "push" && command != "create" && command != "refresh" && command != "merge" && command != "drop" && command != "prune" {
-		return fmt.Errorf("--dry-run is only supported by bootstrap, sync, pull, push, create, refresh, merge, drop, and prune")
-	}
 	if command == "version" {
 		return output(versionResult{Version: version, Commit: commit})
 	}
 	cwd, err := os.Getwd()
-	if err != nil {
+	if err != nil && workspace == "" {
 		return err
 	}
 	if workspace == "" {
 		workspace = cwd
 	}
+	if command == "shell" {
+		return printShell(arg)
+	}
+	if command == "init" {
+		result, err := vcm.Init(workspace, opts.trunk, dry)
+		if err != nil {
+			return err
+		}
+		return output(result)
+	}
+	if command == "_complete" && (arg == "commands" || strings.HasPrefix(arg, "flags:")) {
+		return complete(nil, arg)
+	}
 	engine, err := vcm.Open(workspace, os.Stderr)
 	if err != nil {
-		return err
+		return &vcm.Error{Code: "configuration", Err: err}
 	}
 	engine.DryRun = dry
 	engine.Style = func(semantic vcm.LogSemantic, text string) string {
@@ -229,55 +89,63 @@ func run(args []string) error {
 		return stderrStyle.paint(color, text)
 	}
 	engine.Force = force && command != "merge"
-	engine.MergeForce = force && command == "merge"
-	engine.SkipGitHooks = skipGitHooks
-	if selectionFlags["skip-hooks"] {
+	engine.IgnoreHookFailures = opts.ignoreHookFailures
+	engine.SkipHookGitHooks = skipGitHooks
+	if skipHooks != "" {
 		phases, parseErr := parseMergeHookPhases(skipHooks)
 		if parseErr != nil {
 			return parseErr
 		}
 		engine.SkipMergeHooks = phases
 	}
-	arg := ""
-	if len(positionals) > 2 {
-		return fmt.Errorf("too many arguments")
-	}
-	if len(positionals) == 2 {
-		arg = positionals[1]
-	}
 	var result any
 	switch command {
-	case "validate":
-		result = validateResult{Valid: true, Workspace: engine.Root}
+	case "_complete":
+		return complete(engine, arg)
+	case "path", "switch":
+		path, pathErr := engine.Path(arg, workspace, opts.base)
+		if pathErr != nil {
+			return pathErr
+		}
+		if command == "switch" && !opts.noCD && !jsonOutput {
+			if err := navigate(path); err != nil {
+				return err
+			}
+		}
+		if jsonOutput {
+			return output(pathResult{Path: path})
+		}
+		fmt.Fprintln(os.Stdout, path)
+		return nil
+	case "recover":
+		result, err = engine.Recover(arg, workspace, opts.retryHook, opts.acknowledge)
 	case "list":
-		var manifests []*vcm.Manifest
-		manifests, err = engine.All()
-		if err == nil {
-			result = newListResults(manifests, cwd)
-		}
+		result, err = inspectList(engine, workspace, opts.all, opts.verbose)
 	case "status":
-		var m *vcm.Manifest
-		m, err = engine.Select(arg, cwd)
-		if err == nil {
-			result = newStatusResult(m, engine.Status(m))
-		}
+		result, err = inspectStatus(engine, arg, workspace, opts.verbose)
 	case "check":
-		var report vcm.AuditReport
-		report, err = engine.Check()
-		if err == nil {
-			result = report
-		}
-	case "tree":
-		var report vcm.TreeReport
-		report, err = engine.Tree(workspace)
-		if err == nil {
-			result = newTreeResult(report)
+		if opts.configOnly {
+			result = validateResult{Valid: true, Workspace: engine.Root}
+		} else {
+			result, err = engine.Check()
 		}
 	case "prune":
 		var report vcm.PruneReport
 		if dry {
 			report, err = engine.PruneDryRun()
 		} else {
+			preview, previewErr := engine.PruneDryRun()
+			if previewErr != nil {
+				return previewErr
+			}
+			for _, issue := range preview.RemainingIssues {
+				if issue.Kind == vcm.IssueInspectionError {
+					if outputErr := output(preview); outputErr != nil {
+						return outputErr
+					}
+					return incompleteResultError{command: "prune"}
+				}
+			}
 			if !stdinIsTerminal() {
 				return fmt.Errorf("prune requires an interactive terminal; use --dry-run for a non-interactive audit")
 			}
@@ -297,14 +165,11 @@ func run(args []string) error {
 		if err == nil {
 			result = report
 		}
-	case "bootstrap", "sync", "pull", "push", "create", "refresh", "merge", "drop":
+	case "bootstrap", "fetch", "pull", "push", "create", "refresh", "merge", "drop":
 		var m *vcm.Manifest
 		selector := arg
-		if command == "refresh" {
-			selector = ""
-		}
 		if command == "refresh" || command == "merge" || command == "drop" {
-			m, err = engine.Select(selector, cwd)
+			m, err = engine.Select(selector, workspace)
 			if err != nil {
 				return err
 			}
@@ -328,13 +193,26 @@ func run(args []string) error {
 				if err != nil {
 					return err
 				}
-				return output(newDryRunResult(plan))
+				if err := output(newDryRunResult(plan)); err != nil {
+					return err
+				}
+				if len(plan.Blockers) > 0 {
+					return incompleteResultError{command: command}
+				}
+				return nil
 			}
-			return output(newDryRunResult(engine.Plan(command, m)))
+			plan := engine.Plan(command, m)
+			if err := output(newDryRunResult(plan)); err != nil {
+				return err
+			}
+			if len(plan.Blockers) > 0 {
+				return incompleteResultError{command: command}
+			}
+			return nil
 		}
 		err = engine.Mutate(func() error {
 			if command == "refresh" || command == "merge" || command == "drop" {
-				m, err = engine.Select(selector, cwd)
+				m, err = engine.Select(selector, workspace)
 				if err != nil {
 					return err
 				}
@@ -342,8 +220,8 @@ func run(args []string) error {
 			switch command {
 			case "bootstrap":
 				return engine.Bootstrap()
-			case "sync":
-				return engine.Sync()
+			case "fetch":
+				return engine.Fetch()
 			case "pull":
 				return engine.Pull()
 			case "push":
@@ -360,6 +238,23 @@ func run(args []string) error {
 			}
 			return nil
 		})
+		if !opts.noCD && !jsonOutput {
+			if command == "create" && err == nil && m != nil {
+				if navErr := navigate(m.Workspace); navErr != nil {
+					return navErr
+				}
+			}
+			if (command == "merge" || command == "drop") && m != nil && withinPath(cwd, m.Workspace) {
+				if _, statErr := os.Stat(cwd); os.IsNotExist(statErr) {
+					if navErr := navigate(engine.Root); navErr != nil && err == nil {
+						err = navErr
+					}
+				}
+			}
+		}
+		if err != nil {
+			return operationFailure(command, m, err)
+		}
 		switch command {
 		case "create":
 			if m != nil {
@@ -390,6 +285,16 @@ func run(args []string) error {
 		return err
 	}
 	switch value := result.(type) {
+	case inspectionResult:
+		if inspectionFailed(value.Repositories) {
+			return incompleteResultError{command: "status"}
+		}
+	case overviewResult:
+		for _, c := range value.Changes {
+			if inspectionFailed(c.Inspection) {
+				return incompleteResultError{command: "list"}
+			}
+		}
 	case vcm.AuditReport:
 		if !value.Clean {
 			return incompleteResultError{command: "check"}
@@ -435,6 +340,9 @@ func pruneActionPrompt(action string) string {
 func requestsJSON(args []string) bool {
 	jsonOutput := false
 	for _, arg := range args {
+		if arg == "--" {
+			break
+		}
 		if arg == "--json" || arg == "-json" {
 			jsonOutput = true
 			continue

@@ -141,7 +141,7 @@ func TestOperationLoggingCoversLifecycleOutcomes(t *testing.T) {
 	if err := e.Bootstrap(); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.Sync(); err != nil {
+	if err := e.Fetch(); err != nil {
 		t.Fatal(err)
 	}
 	m, err := e.Create("logged-lifecycle")
@@ -159,10 +159,8 @@ func TestOperationLoggingCoversLifecycleOutcomes(t *testing.T) {
 	log := output.String()
 	for _, want := range []string{
 		"[bootstrap/repo0 @ " + childOrigin + "] validated existing checkout on trunk main",
-		"[sync/root @ " + e.Root + "] already current cached origin/main at ",
-		"[sync/repo0 @ " + childOrigin + "] already current cached origin/main at ",
-		"[create/root @ " + e.Root + "] synchronized trunk main ",
-		" (rebase)",
+		"[fetch/root @ " + e.Root + "] already current cached origin/main at ",
+		"[fetch/repo0 @ " + childOrigin + "] already current cached origin/main at ",
 		"[create/root @ " + m.Repositories[0].Path + "] created managed worktree at ",
 		"[refresh/root @ " + m.Repositories[0].Path + "] already current at base ",
 		"[refresh/repo0 @ " + m.Repositories[1].Path + "] updated base ",

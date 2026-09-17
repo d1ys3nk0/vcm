@@ -125,7 +125,7 @@ func divergenceState(ahead, behind int) string {
 
 func inspectTreeRepository(item TreeRepository, targetRef string) TreeRepository {
 	if _, err := os.Stat(item.Path); err != nil {
-		item.SyncState = "unavailable"
+		item.TreeState, item.SyncState = "missing", "unavailable"
 		if !os.IsNotExist(err) {
 			item.Detail = err.Error()
 		}
@@ -144,6 +144,12 @@ func inspectTreeRepository(item TreeRepository, targetRef string) TreeRepository
 	} else {
 		item.TreeState = "changed"
 	}
+	if item.Clean {
+		if cleanErr := clean(item.Path); cleanErr != nil {
+			item.TreeState = "error"
+			item.Detail = cleanErr.Error()
+		}
+	}
 	item.Branch, err = branch(item.Path)
 	if err != nil {
 		item.SyncState, item.Detail = "error", err.Error()
@@ -152,7 +158,7 @@ func inspectTreeRepository(item TreeRepository, targetRef string) TreeRepository
 	if _, err = git(item.Path, "rev-parse", "--verify", "--quiet", targetRef); err != nil {
 		item.SyncState = "target missing"
 		if item.Cached {
-			item.Detail = "cached remote target is missing; run vcm sync"
+			item.Detail = "cached remote target is missing; run vcm fetch"
 		} else {
 			item.Detail = "configured local base branch is missing"
 		}
@@ -203,7 +209,13 @@ func (e *Engine) Tree(cwd string) (TreeReport, error) {
 			cached = false
 			state, ok := selected[name]
 			if !ok || state.Removed || !state.Owned {
-				report.Repositories = append(report.Repositories, TreeRepository{Name: name, Path: path, SyncState: "unavailable"})
+				label := "missing"
+				if !ok {
+					label = "not selected"
+				} else if state.Removed {
+					label = "removed"
+				}
+				report.Repositories = append(report.Repositories, TreeRepository{Name: name, Path: path, TreeState: label, SyncState: label})
 				return
 			}
 			path = state.Path
@@ -229,6 +241,11 @@ func (e *Engine) Tree(cwd string) (TreeReport, error) {
 	appendRepository("root", "", e.Config.Root.Trunk)
 	for _, repository := range e.Config.Children {
 		appendRepository(repository.Name, repository.Path, repository.Trunk)
+	}
+	if inChange {
+		for _, name := range manifest.Missing {
+			report.Repositories = append(report.Repositories, TreeRepository{Name: name, TreeState: "error", SyncState: "error", Detail: "selected repository is absent from current configuration"})
+		}
 	}
 	return report, nil
 }

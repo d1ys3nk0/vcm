@@ -18,7 +18,7 @@ func git(dir string, args ...string) (string, error) {
 // gitRaw preserves NUL-delimited path output, including leading whitespace.
 func gitRaw(dir string, args ...string) (string, error) {
 	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0")
 	var out, errout bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &errout
@@ -34,13 +34,6 @@ func redactURLCredentials(s string) string {
 	return urlCredentials.ReplaceAllString(s, "${1}[redacted]@")
 }
 func clean(path string) error {
-	s, e := git(path, "status", "--porcelain", "--untracked-files=all")
-	if e != nil {
-		return e
-	}
-	if s != "" {
-		return fmt.Errorf("dirty checkout %s; commit or preserve changes before retry", path)
-	}
 	for _, p := range []string{"MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply"} {
 		v, e := git(path, "rev-parse", "--git-path", p)
 		if e == nil {
@@ -48,10 +41,18 @@ func clean(path string) error {
 				v = filepath.Join(path, v)
 			}
 			if _, e = os.Stat(v); e == nil {
-				return fmt.Errorf("unfinished Git operation in %s; resolve it before retry", path)
+				return failure("interruption", "", fmt.Errorf("unfinished Git operation in %s; resolve it before retry", path))
 			}
 		}
 	}
+	s, e := git(path, "status", "--porcelain", "--untracked-files=all")
+	if e != nil {
+		return e
+	}
+	if s != "" {
+		return failure("preflight", "", fmt.Errorf("dirty checkout %s; commit or preserve changes before retry", path))
+	}
+
 	return nil
 }
 func head(path string) (string, error)   { return git(path, "rev-parse", "HEAD") }

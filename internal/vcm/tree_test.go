@@ -58,7 +58,7 @@ func TestTreeReportsMissingCachedTargetWithoutFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	state := treeRepository(t, report, "repo0")
-	if state.SyncState != "target missing" || state.Detail != "cached remote target is missing; run vcm sync" {
+	if state.SyncState != "target missing" || state.Detail != "cached remote target is missing; run vcm fetch" {
 		t.Fatalf("unexpected missing-target state: %+v", state)
 	}
 }
@@ -66,7 +66,7 @@ func TestTreeReportsMissingCachedTargetWithoutFailure(t *testing.T) {
 func TestTreeReportsCachedRemoteBehindState(t *testing.T) {
 	e := fixture(t, 1)
 	advancePullRemote(t, e.Config.Children[0].URL, "remote.txt")
-	if err := e.Sync(); err != nil {
+	if err := e.Fetch(); err != nil {
 		t.Fatal(err)
 	}
 	report, err := e.Tree(e.Root)
@@ -99,7 +99,7 @@ func TestTreeChangeUsesLocalTrunksAndKeepsPartialRepositoriesUnavailable(t *test
 		t.Fatalf("unexpected Change synchronization state: %+v", root)
 	}
 	child := treeRepository(t, report, "repo0")
-	if child.Available || child.SyncState != "unavailable" || child.Path != filepath.Join(manifest.Workspace, "repo0") {
+	if child.Available || child.SyncState != "not selected" || child.Path != filepath.Join(manifest.Workspace, "repo0") {
 		t.Fatalf("partial Change fell back to canonical checkout: %+v", child)
 	}
 }

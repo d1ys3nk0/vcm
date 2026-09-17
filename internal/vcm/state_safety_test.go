@@ -25,7 +25,7 @@ func safetyFixture(t *testing.T) (store, *Manifest) {
 	s := store{dir: filepath.Join(common, "vcm"), root: root, config: config}
 	tag := newTag("safety")
 	change := changeWorkspace(root, tag)
-	m := &Manifest{Version: 1, Tag: tag, Slug: "safety", Workspace: change, Origin: root, Config: config, State: "creating", Hooks: map[string]HookState{}}
+	m := &Manifest{Version: 3, Tag: tag, Slug: "safety", Workspace: change, Origin: root, Config: config, State: "creating", Hooks: map[string]HookState{}}
 	m.Repositories = []RepoState{{Repository: Repository{Name: "root", URL: "https://example.invalid/root.git", Trunk: "main"}, Origin: root, Path: change}, {Repository: config.Children[0], Origin: filepath.Join(root, "repos/api"), Path: filepath.Join(change, "repos/api")}}
 	return s, m
 }
@@ -66,8 +66,8 @@ func TestManifestRoundTripAndStrictDecoding(t *testing.T) {
 	if err := json.Unmarshal(raw, &persisted); err != nil {
 		t.Fatal(err)
 	}
-	if persisted["version"] != float64(2) {
-		t.Fatalf("state version = %v, want 1", persisted["version"])
+	if persisted["version"] != float64(3) {
+		t.Fatalf("state version = %v, want 3", persisted["version"])
 	}
 	for _, field := range []string{"tag", "slug", "workspace", "origin", "config"} {
 		if _, ok := persisted[field]; ok {
@@ -111,7 +111,7 @@ func TestManifestRoundTripAndStrictDecoding(t *testing.T) {
 		"invalid version": func(b []byte) []byte {
 			var data map[string]any
 			_ = json.Unmarshal(b, &data)
-			data["version"] = float64(3)
+			data["version"] = float64(99)
 			b, _ = json.Marshal(data)
 			return b
 		},
@@ -163,6 +163,7 @@ func TestManifestDoesNotPersistConfiguration(t *testing.T) {
 
 func TestVersionOneStateUpgradesOnMutation(t *testing.T) {
 	s, m := safetyFixture(t)
+	m.State = "ready"
 	if err := s.save(m); err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +186,7 @@ func TestVersionOneStateUpgradesOnMutation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.Version != 2 {
+	if loaded.Version != 1 {
 		t.Fatalf("hydrated version = %d", loaded.Version)
 	}
 	if err = s.save(loaded); err != nil {
@@ -193,7 +194,7 @@ func TestVersionOneStateUpgradesOnMutation(t *testing.T) {
 	}
 	b, _ = os.ReadFile(filename)
 	_ = json.Unmarshal(b, &data)
-	if data["version"] != float64(2) {
+	if data["version"] != float64(3) {
 		t.Fatalf("written version = %v", data["version"])
 	}
 }

@@ -82,16 +82,30 @@ func (e *Engine) Push() error {
 	if err != nil {
 		return err
 	}
+	publicationError := func(index int, published bool, err error) error {
+		result := &PublicationError{Err: failure("preflight", repositories[index].repository.Name, err), Blocked: repositories[index].repository.Name, Completed: []string{}, Pending: []string{}}
+		for i, r := range repositories {
+			if i == index {
+				continue
+			}
+			if published && i < index {
+				result.Completed = append(result.Completed, r.repository.Name)
+			} else {
+				result.Pending = append(result.Pending, r.repository.Name)
+			}
+		}
+		return result
+	}
 	for i := range repositories {
 		if err := e.preflightPush(&repositories[i]); err != nil {
-			return err
+			return publicationError(i, false, err)
 		}
 	}
-	for _, repository := range repositories {
+	for index, repository := range repositories {
 		r := repository.repository
 		refspec := "refs/heads/" + r.Trunk + ":refs/heads/" + r.Trunk
 		if _, err := git(repository.path, "push", "origin", refspec); err != nil {
-			return fmt.Errorf("repository %s push: %w; earlier repositories may already be published, inspect remotes and retry", r.Name, err)
+			return publicationError(index, true, failure("external_command", r.Name, fmt.Errorf("repository %s push: %w; earlier repositories may already be published, inspect remotes and retry", r.Name, err)))
 		}
 		e.logOperationOutcome("push", r.Name, repository.path, "", "pushed", LogChanged, " trunk %s at %s", r.Trunk, abbreviateRevision(repository.local))
 	}

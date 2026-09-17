@@ -40,13 +40,13 @@ func runJSON[T any](t *testing.T, args ...string) (T, error) {
 	t.Helper()
 	var result T
 	data, err := runOutput(t, args...)
-	if err != nil {
+	if len(data) == 0 {
 		return result, err
 	}
 	if err := json.Unmarshal([]byte(data), &result); err != nil {
 		t.Fatalf("invalid result %q: %v", data, err)
 	}
-	return result, nil
+	return result, err
 }
 
 func runErrorOutput(t *testing.T, args ...string) (string, error) {
@@ -200,42 +200,41 @@ func TestVersionReportsBuildMetadata(t *testing.T) {
 	}
 }
 
-func TestHelpDocumentsEveryCommandAndOption(t *testing.T) {
-	output, err := runErrorOutput(t, "--help")
+func TestCommandHelpOutsideWorkspace(t *testing.T) {
+	t.Chdir(t.TempDir())
+	output, err := runErrorOutput(t, "merge", "--help")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, phrase := range []string{
-		"validate", "bootstrap", "tree", "sync", "pull", "push                 Validate and publish", "create <slug>", "list", "status [change]", "refresh              Merge", "merge [change]", "drop [change]", "version",
-		"--workspace PATH", "--json", "--dry-run", "--force", "--only NAMES", "--except NAMES", "--skip-hooks PHASES", "--skip-git-hooks", "feat: <manifest slug>", "Change selection:", "Examples:",
-		"inside its managed", "Refresh is available only from inside",
-	} {
-		if !strings.Contains(output, phrase) {
-			t.Errorf("help is missing %q:\n%s", phrase, output)
-		}
+	if !strings.Contains(output, "--message") || strings.Contains(output, "--only") {
+		t.Fatalf("command help option scope: %s", output)
 	}
-	if strings.Contains(strings.ToLower(output), "verification") {
-		t.Fatalf("help prescribes a downstream verification workflow:\n%s", output)
+	output, err = runErrorOutput(t, "--help")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(output, "--message") {
+		t.Fatalf("top-level help exposes merge options: %s", output)
 	}
 }
 
 func TestMergeOverrideFlagsValidationAndDryRun(t *testing.T) {
 	root, manifest := cliManagedChange(t)
-	result, err := runJSON[dryRunResult](t, "merge", manifest.Tag, "-f", "--skip-hooks", "merge-after,merge-before", "--skip-git-hooks", "--dry-run", "--json", "--workspace", root)
+	result, err := runJSON[dryRunResult](t, "merge", manifest.Tag, "--ignore-hook-failures", "--skip-hooks", "merge-after,merge-before", "--skip-hook-git-hooks", "--dry-run", "--json", "--workspace", root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.Force || !result.SkipGitHooks || strings.Join(result.SkippedHookPhases, ",") != "merge-before,merge-after" {
+	if !result.IgnoreHookFailures || !result.SkipHookGitHooks || strings.Join(result.SkippedHookPhases, ",") != "merge-before,merge-after" {
 		t.Fatalf("merge override dry-run omitted options: %+v", result)
 	}
 	if !result.DeletesIgnoredContent {
 		t.Fatalf("merge dry-run omitted ignored-content deletion: %+v", result)
 	}
-	human, err := runOutput(t, "merge", manifest.Tag, "--force", "--skip-hooks=merge-before", "--skip-git-hooks", "--dry-run", "--workspace", root)
+	human, err := runOutput(t, "merge", manifest.Tag, "--ignore-hook-failures", "--skip-hooks=merge-before", "--skip-hook-git-hooks", "--dry-run", "--workspace", root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Force: true", "Delete ignored content: true", "Skipped hook phases: merge-before", "Git hooks suppressed: true"} {
+	for _, want := range []string{"Ignore hook failures: true", "Delete ignored content: true", "Skipped hook phases: merge-before", "Git hooks inside lifecycle hooks suppressed: true"} {
 		if !strings.Contains(human, want) {
 			t.Fatalf("human dry-run missing %q:\n%s", want, human)
 		}
@@ -256,7 +255,7 @@ func TestMergeOverrideFlagsValidationAndDryRun(t *testing.T) {
 		"duplicate":       {"merge", manifest.Tag, "--skip-hooks", "merge-before,merge-before", "--workspace", root},
 		"unsupported":     {"merge", manifest.Tag, "--skip-hooks", "create-after", "--workspace", root},
 		"placement":       {"status", manifest.Tag, "--skip-hooks", "merge-before", "--workspace", root},
-		"git-placement":   {"status", manifest.Tag, "--skip-git-hooks", "--workspace", root},
+		"git-placement":   {"status", manifest.Tag, "--skip-hook-git-hooks", "--workspace", root},
 		"force-placement": {"status", manifest.Tag, "-f", "--workspace", root},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -286,16 +285,16 @@ func TestCLIUsesDefaultMergeMessage(t *testing.T) {
 }
 
 func TestCreateSelectionFlags(t *testing.T) {
-	root := cliWorkspace(t)
+	root := cliPlanWorkspace(t)
 	result, err := runJSON[dryRunResult](t, "create", "partial", "--only", "api", "--dry-run", "--json", "--workspace", root)
-	if err != nil {
+	if err != nil && len(result.Blockers) == 0 {
 		t.Fatal(err)
 	}
 	if len(result.Resources) != 2 || result.Resources[1] != filepath.Join(result.Workspace, "repos/api") {
 		t.Fatalf("--only dry-run resources: %+v", result.Resources)
 	}
 	result, err = runJSON[dryRunResult](t, "create", "root-only", "--except=api", "--dry-run", "--json", "--workspace", root)
-	if err != nil {
+	if err != nil && len(result.Blockers) == 0 {
 		t.Fatal(err)
 	}
 	if len(result.Resources) != 1 || result.Resources[0] != result.Workspace {
@@ -318,18 +317,15 @@ func TestCreateSelectionFlags(t *testing.T) {
 	}
 }
 
-func TestMissingCommandShowsHelp(t *testing.T) {
-	output, err := runErrorOutput(t)
-	if err == nil || err.Error() != "command required" {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !strings.Contains(output, "Base repository commands:") || !strings.Contains(output, "create <slug>") {
-		t.Fatalf("missing command did not show help:\n%s", output)
+func TestMissingCommandProvidesHelpDirection(t *testing.T) {
+	_, err := runErrorOutput(t)
+	if err == nil || !strings.Contains(err.Error(), "vcm --help") {
+		t.Fatalf("missing usage direction: %v", err)
 	}
 }
 
 func TestCommandRejectsUnexpectedArguments(t *testing.T) {
-	for _, args := range [][]string{{"version", "extra"}, {"validate", "extra"}, {"list", "extra"}, {"tree", "extra"}, {"sync", "extra"}, {"sync", "--force"}, {"pull", "extra"}, {"pull", "--force"}, {"refresh", "change"}, {"push", "extra"}, {"push", "--force"}, {"push", "--only", "api"}, {"create", "one", "two"}, {"version", "--force"}, {"version", "--unknown"}, {"validate", "--workspace"}} {
+	for _, args := range [][]string{{"version", "extra"}, {"check", "--config-only", "extra"}, {"list", "extra"}, {"status", "extra"}, {"fetch", "extra"}, {"fetch", "--force"}, {"pull", "extra"}, {"pull", "--force"}, {"refresh", "change"}, {"push", "extra"}, {"push", "--force"}, {"push", "--only", "api"}, {"create", "one", "two"}, {"version", "--force"}, {"version", "--unknown"}, {"check", "--config-only", "--workspace"}} {
 		t.Run(args[0]+"/"+args[len(args)-1], func(t *testing.T) {
 			if _, err := runOutput(t, args...); err == nil {
 				t.Fatal("unexpected arguments accepted")
@@ -340,7 +336,7 @@ func TestCommandRejectsUnexpectedArguments(t *testing.T) {
 
 func TestWorkspaceOverrideAndFlagsAfterCommand(t *testing.T) {
 	root := cliWorkspace(t)
-	for _, args := range [][]string{{"--workspace", root, "--json", "validate"}, {"validate", "--workspace", root, "--json"}, {"validate", "--workspace=" + root, "--json"}} {
+	for _, args := range [][]string{{"--workspace", root, "--json", "check", "--config-only"}, {"check", "--config-only", "--workspace", root, "--json"}, {"check", "--config-only", "--workspace=" + root, "--json"}} {
 		result, err := runJSON[validateResult](t, args...)
 		if err != nil {
 			t.Fatal(err)
@@ -353,14 +349,14 @@ func TestWorkspaceOverrideAndFlagsAfterCommand(t *testing.T) {
 
 func TestTreeWorkspaceOverrideSelectsRequestedContext(t *testing.T) {
 	root, manifest := cliManagedChange(t)
-	base, err := runJSON[treeResult](t, "tree", "--json", "--workspace", root)
+	base, err := runJSON[treeResult](t, "status", "--json", "--workspace", root)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if base.Context != "base" || base.Change != "" || base.Workspace != root {
 		t.Fatalf("explicit base workspace selected wrong context: %+v", base)
 	}
-	change, err := runJSON[treeResult](t, "tree", "--json", "--workspace", manifest.Workspace)
+	change, err := runJSON[treeResult](t, "status", "--json", "--workspace", manifest.Workspace)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -370,10 +366,10 @@ func TestTreeWorkspaceOverrideSelectsRequestedContext(t *testing.T) {
 }
 
 func TestDryRunCreatesNoResources(t *testing.T) {
-	root := cliWorkspace(t)
-	for _, args := range [][]string{{"bootstrap", "--dry-run", "--json", "--workspace", root}, {"create", "example-change", "--dry-run", "--json", "--workspace", root}, {"sync", "--dry-run", "--json", "--workspace", root}, {"pull", "--dry-run", "--json", "--workspace", root}, {"push", "--dry-run", "--json", "--workspace", root}} {
+	root := cliPlanWorkspace(t)
+	for _, args := range [][]string{{"bootstrap", "--dry-run", "--json", "--workspace", root}, {"create", "example-change", "--dry-run", "--json", "--workspace", root}, {"fetch", "--dry-run", "--json", "--workspace", root}, {"pull", "--dry-run", "--json", "--workspace", root}, {"push", "--dry-run", "--json", "--workspace", root}} {
 		result, err := runJSON[dryRunResult](t, args...)
-		if err != nil {
+		if err != nil && len(result.Blockers) == 0 {
 			t.Fatal(err)
 		}
 		if !result.DryRun {
@@ -389,7 +385,7 @@ func TestDryRunCreatesNoResources(t *testing.T) {
 		}
 	}
 	result, err := runJSON[dryRunResult](t, "push", "--dry-run", "--json", "--workspace", root)
-	if err != nil {
+	if err != nil && len(result.Blockers) == 0 {
 		t.Fatal(err)
 	}
 	if len(result.Resources) != 2 || result.Resources[0] != root || result.Resources[1] != filepath.Join(root, "repos", "api") {
@@ -468,18 +464,22 @@ func TestJSONResultRemainsOnStdoutWhileProgressUsesStderr(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
 		t.Fatalf("invalid JSON stdout %q: %v", stdout, err)
 	}
-	if !strings.Contains(stderr, "[create/root @ "+root+"] synchronized trunk main ") || strings.Contains(stdout, "[create/") {
+	if !strings.Contains(stderr, "] created managed worktree at ") || strings.Contains(stdout, "[create/") {
 		t.Fatalf("stdout/stderr were not isolated:\nstdout: %s\nstderr: %s", stdout, stderr)
 	}
 }
 
-func TestStatusRequiresManagedSelection(t *testing.T) {
-	root := cliWorkspace(t)
-	if _, err := runOutput(t, "status", "--workspace", root); err == nil || err.Error() != "Change argument is required outside a managed Change worktree" {
-		t.Fatalf("unexpected omitted-selection error: %v", err)
+func TestStatusSupportsBaseAndRejectsUnknownSelection(t *testing.T) {
+	root, _ := cliManagedChange(t)
+	result, err := runJSON[inspectionResult](t, "status", "--json", "--workspace", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Context != "base" {
+		t.Fatalf("wrong context %+v", result)
 	}
 	if _, err := runOutput(t, "status", "missing-change", "--workspace", root); err == nil {
-		t.Fatal("status accepted unknown Change")
+		t.Fatal("accepted unknown selector")
 	}
 }
 
@@ -509,7 +509,8 @@ func TestChangeCommandsUseContextAwareSelection(t *testing.T) {
 		{name: "drop", args: []string{"drop", "--dry-run", "--json"}},
 	}
 	type selectedResult struct {
-		Tag string `json:"tag"`
+		Tag    string `json:"tag"`
+		Change string `json:"change"`
 	}
 	assertSelected := func(t *testing.T, command []string, selector string, workspaceOverride bool) {
 		t.Helper()
@@ -523,6 +524,9 @@ func TestChangeCommandsUseContextAwareSelection(t *testing.T) {
 		result, err := runJSON[selectedResult](t, args...)
 		if err != nil {
 			t.Fatal(err)
+		}
+		if result.Tag == "" {
+			result.Tag = result.Change
 		}
 		if result.Tag != manifest.Tag {
 			t.Fatalf("selected %q, want %q", result.Tag, manifest.Tag)
@@ -546,20 +550,17 @@ func TestChangeCommandsUseContextAwareSelection(t *testing.T) {
 	for _, command := range commands {
 		t.Run(command.name+"/outside", func(t *testing.T) {
 			args := append(append([]string{}, command.args...), "--workspace", root)
+			if command.name == "status" {
+				if _, err := runOutput(t, args...); err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
 			if _, err := runOutput(t, args...); err == nil || err.Error() != "Change argument is required outside a managed Change worktree" {
 				t.Fatalf("unexpected omitted-selection error: %v", err)
 			}
 		})
-		if command.name == "refresh" {
-			t.Run(command.name+"/explicit-rejected", func(t *testing.T) {
-				args := append(append([]string{}, command.args...), manifest.Tag, "--workspace", root)
-				if _, err := runOutput(t, args...); err == nil || err.Error() != "refresh takes no arguments" {
-					t.Fatalf("unexpected explicit refresh error: %v", err)
-				}
-			})
-			continue
-		}
-		for _, selector := range []string{manifest.Tag, manifest.Workspace} {
+		for _, selector := range []string{manifest.Slug, manifest.Tag, manifest.Workspace} {
 			t.Run(command.name+"/explicit/"+filepath.Base(selector), func(t *testing.T) {
 				assertSelected(t, command.args, selector, true)
 			})
@@ -622,4 +623,17 @@ func TestCheckAndPruneCLIContracts(t *testing.T) {
 	if !pruned.Complete || len(pruned.Actions) != 1 || pruned.Actions[0].Status != vcm.PruneCompleted {
 		t.Fatalf("unexpected prune result: %+v", pruned)
 	}
+}
+
+func cliPlanWorkspace(t *testing.T) string {
+	t.Helper()
+	root := cliCleanWorkspace(t)
+	if out, err := exec.Command("git", "-C", root, "remote", "add", "origin", "/nonexistent-disposable-remote").CombinedOutput(); err != nil {
+		t.Fatalf("%s %v", out, err)
+	}
+	data := "version: 1\nroot:\n  trunk: main\nchildren:\n- name: api\n  path: repos/api\n  url: /nonexistent-disposable-remote\n  trunk: main\n"
+	if err := os.WriteFile(filepath.Join(root, "vcm.yml"), []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return root
 }

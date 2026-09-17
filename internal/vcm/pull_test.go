@@ -24,7 +24,7 @@ func TestSyncFetchesRootAndChildrenWithoutChangingWorktrees(t *testing.T) {
 	rootRemote := advancePullRemote(t, rootURL, "root-remote.txt")
 	childRemote := advancePullRemote(t, e.Config.Children[0].URL, "child-remote.txt")
 	put(t, filepath.Join(child, "untracked.txt"), "preserved\n")
-	if err := e.Sync(); err != nil {
+	if err := e.Fetch(); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := head(e.Root); got != rootBefore {

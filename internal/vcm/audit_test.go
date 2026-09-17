@@ -445,8 +445,8 @@ func TestInvalidStateBlocksEveryPruneAction(t *testing.T) {
 		})
 		return pruneErr
 	})
-	if err != nil {
-		t.Fatal(err)
+	if err == nil {
+		t.Fatal("mutation accepted unreadable persisted state")
 	}
 	if report.Complete || confirmations != 0 || len(report.Actions) != 0 {
 		t.Fatalf("invalid state allowed destructive actions: confirmations=%d report=%+v", confirmations, report)

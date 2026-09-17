@@ -85,7 +85,7 @@ func (e *Engine) Refresh(m *Manifest) error {
 				return err
 			}
 			_, _ = git(r.Path, "merge", "--no-ff", "--no-commit", target)
-			return fmt.Errorf("repository %s refresh conflict preserved for repair; resolve and commit, then retry: %w", r.Repository.Name, mergeErr)
+			return failure("conflict", r.Repository.Name, fmt.Errorf("repository %s refresh conflict preserved for repair; resolve and commit, then retry: %w", r.Repository.Name, mergeErr))
 		}
 		tree = strings.Split(tree, "\n")[0]
 		commit, err := git(r.Path, "commit-tree", tree, "-p", source, "-p", target, "-m", "chore(vcm): refresh "+m.Tag)

@@ -195,7 +195,8 @@ func (e *Engine) removeAll(operation string, m *Manifest) error {
 	return nil
 }
 
-func (e *Engine) removeOne(operation string, m *Manifest, r *RepoState) error {
+func (e *Engine) removeOne(operation string, m *Manifest, r *RepoState) (errOut error) {
+	defer classify(&errOut, "preflight", r.Repository.Name)
 	if _, err := os.Lstat(r.Path); err == nil {
 		if err = e.owned(m, r); err != nil {
 			return err
@@ -423,10 +424,8 @@ func (e *Engine) Plan(command string, m *Manifest) OperationPlan {
 		}
 	}
 	force := e.Force
-	if command == "merge" {
-		force = e.MergeForce
-	}
-	return OperationPlan{Command: command, DryRun: true, Force: force, DeletesIgnoredContent: command == "merge", SkippedHookPhases: skipped, SkipGitHooks: e.SkipGitHooks, Tag: func() string {
+
+	return e.enrichPlan(OperationPlan{Command: command, DryRun: true, Force: force, IgnoreHookFailures: e.IgnoreHookFailures, DeletesIgnoredContent: command == "merge", SkippedHookPhases: skipped, SkipHookGitHooks: e.SkipHookGitHooks, Tag: func() string {
 		if m != nil {
 			return m.Tag
 		}
@@ -436,10 +435,11 @@ func (e *Engine) Plan(command string, m *Manifest) OperationPlan {
 			return m.Workspace
 		}
 		return e.Root
-	}(), Resources: paths}
+	}(), Resources: paths}, m)
 }
 
-func (e *Engine) preflight(m *Manifest) error {
+func (e *Engine) preflight(m *Manifest) (errOut error) {
+	defer classify(&errOut, "preflight", "")
 	for i := range m.Repositories {
 		r := &m.Repositories[i]
 		if r.Removed || r.Merged {
@@ -452,7 +452,7 @@ func (e *Engine) preflight(m *Manifest) error {
 			return err
 		}
 		if err := clean(r.Path); err != nil {
-			return err
+			return failure("preflight", r.Repository.Name, err)
 		}
 		target, err := head(r.Origin)
 		if err != nil {
@@ -513,7 +513,7 @@ func (e *Engine) freezeMerge(m *Manifest) error {
 		}
 		tree, err := git(r.Origin, "merge-tree", "--write-tree", target, source)
 		if err != nil {
-			return fmt.Errorf("repository %s conflict after merge gate: %w", r.Repository.Name, err)
+			return failure("conflict", r.Repository.Name, fmt.Errorf("repository %s conflict after merge gate: %w", r.Repository.Name, err))
 		}
 		tree = strings.Split(tree, "\n")[0]
 		r.Source, r.TargetBefore, r.MergeTree = source, target, tree
@@ -545,7 +545,8 @@ func (e *Engine) freezeMerge(m *Manifest) error {
 	return nil
 }
 
-func (e *Engine) applyMerge(m *Manifest, r *RepoState) error {
+func (e *Engine) applyMerge(m *Manifest, r *RepoState) (errOut error) {
+	defer classify(&errOut, "preflight", r.Repository.Name)
 	if r.Merged {
 		return nil
 	}
