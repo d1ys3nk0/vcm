@@ -15,11 +15,13 @@ type pathResult struct {
 	Path string `json:"path"`
 }
 type inspectionResult struct {
+	ConfigurationDrift []string `json:"configuration_drift,omitempty"`
 	treeResult
 	Lifecycle *statusResult `json:"lifecycle,omitempty"`
 	verbose   bool
 }
 type overviewEntry struct {
+	ConfigurationDrift []string `json:"configuration_drift,omitempty"`
 	listResult
 	Dirty      *int                   `json:"dirty_repositories,omitempty"`
 	BaseUpdate string                 `json:"base_update"`
@@ -42,21 +44,25 @@ func inspectStatus(e *vcm.Engine, selector, context string, verbose bool) (inspe
 		m = selected
 		context = m.Workspace
 	}
-	report, err := e.Tree(context)
+	var report vcm.TreeReport
+	var err error
+	if m != nil {
+		report, err = e.TreeManifest(m)
+	} else {
+		report, err = e.Tree(context)
+	}
 	if err != nil {
 		return result, err
 	}
 	result.treeResult = newTreeResult(report)
 	if report.Context == "change" {
 		if m == nil {
-			m, err = e.Select(report.Change, context)
-			if err != nil {
-				return result, err
-			}
+			m = report.Manifest
 		}
+		result.ConfigurationDrift = e.ConfigurationDrift(m)
 		lifecycle := newStatusResult(m, e.Status(m))
 		if m.State == "dropped" {
-			lifecycle.State = operationLabel(m)
+			lifecycle.State = vcm.Lifecycle(operationLabel(m))
 		}
 		result.Lifecycle = &lifecycle
 	}
@@ -74,6 +80,8 @@ func operationLabel(m *vcm.Manifest) string {
 	switch m.State {
 	case "ready":
 		return "active"
+	case "integrated":
+		return "integrated — cleanup pending"
 	case "dropped":
 		for _, r := range m.Repositories {
 			if !r.Merged {
@@ -82,7 +90,7 @@ func operationLabel(m *vcm.Manifest) string {
 		}
 		return "merged"
 	default:
-		return m.State
+		return string(m.State)
 	}
 }
 func inspectList(e *vcm.Engine, context string, all, verbose bool) (overviewResult, error) {
@@ -106,8 +114,8 @@ func inspectList(e *vcm.Engine, context string, all, verbose bool) (overviewResu
 		if !all && m.State == "dropped" {
 			continue
 		}
-		entry := overviewEntry{listResult: summary, Operation: operationLabel(m), BaseUpdate: "current"}
-		report, err := e.Tree(m.Workspace)
+		entry := overviewEntry{ConfigurationDrift: e.ConfigurationDrift(m), listResult: summary, Operation: operationLabel(m), BaseUpdate: "current"}
+		report, err := e.TreeManifest(m)
 		if err != nil {
 			return result, err
 		}
@@ -134,6 +142,9 @@ func inspectList(e *vcm.Engine, context string, all, verbose bool) (overviewResu
 	return result, nil
 }
 func renderInspection(out io.Writer, v inspectionResult, style humanStyle) error {
+	for _, change := range v.ConfigurationDrift {
+		fmt.Fprintln(out, "Configuration: "+change)
+	}
 	if v.Lifecycle != nil {
 		fmt.Fprintf(out, "Change: %s (%s)\n", v.Lifecycle.Slug, humanLifecycle(v.Lifecycle.State))
 	} else {
@@ -210,11 +221,14 @@ func renderInspection(out io.Writer, v inspectionResult, style humanStyle) error
 	}
 	return nil
 }
-func humanLifecycle(state string) string {
+func humanLifecycle(state vcm.Lifecycle) string {
+	if state == "integrated" {
+		return "integrated — cleanup pending"
+	}
 	if state == "ready" {
 		return "active"
 	}
-	return state
+	return string(state)
 }
 func renderOverview(out io.Writer, v overviewResult, style humanStyle) error {
 	if len(v.Changes) == 0 {
@@ -223,6 +237,9 @@ func renderOverview(out io.Writer, v overviewResult, style humanStyle) error {
 	}
 	counts := map[string]int{}
 	for _, c := range v.Changes {
+		for _, change := range c.ConfigurationDrift {
+			fmt.Fprintf(out, "Configuration %s: %s\n", c.Slug, change)
+		}
 		counts[c.Slug]++
 	}
 	rows := [][]string{tableHeader(style, "", "Change", "Repos", "Dirty", "Base update", "Operation", "Age")}
@@ -276,37 +293,41 @@ func operationFailure(command string, m *vcm.Manifest, err error) error {
 		for _, name := range publication.Completed {
 			result.Progress = append(result.Progress, progressEntry{Repository: name, Publication: "complete"})
 		}
-		result.Progress = append(result.Progress, progressEntry{Repository: publication.Blocked, Publication: "blocked"})
+		if publication.Blocked != "" {
+			result.Progress = append(result.Progress, progressEntry{Repository: publication.Blocked, Publication: "blocked"})
+		}
 		for _, name := range publication.Pending {
 			result.Progress = append(result.Progress, progressEntry{Repository: name, Publication: "pending"})
 		}
-		result.NextAction = "Inspect the reported remote failure and rerun vcm push; completed publications are not rolled back."
+		result.NextAction = "Inspect the reported remote failure and rerun vcm " + command + "; completed publications are not rolled back."
 	}
 	if m != nil {
 		result.Change = m.Tag
-		if command == "merge" {
+		if command == "merge" || command == "cleanup" {
 			result.Finalization = "pending"
 			if m.State == "merge-finalizing" {
 				result.Finalization = "blocked"
 			}
 		}
 
-		for _, r := range m.Repositories {
-			p := progressEntry{Repository: r.Repository.Name, Integration: "pending", Cleanup: "pending"}
-			if r.Merged {
-				p.Integration = "complete"
-			}
-			if r.Removed {
-				p.Cleanup = "complete"
-			}
-			if r.Repository.Name == result.Repository {
-				if r.Merged && !r.Removed {
-					p.Cleanup = "blocked"
-				} else if !r.Merged {
-					p.Integration = "blocked"
+		if command == "merge" || command == "cleanup" || command == "drop" {
+			for _, r := range m.Repositories {
+				p := progressEntry{Repository: r.Repository.Name, Integration: "pending", Cleanup: "pending"}
+				if r.Merged {
+					p.Integration = "complete"
 				}
+				if r.Removed {
+					p.Cleanup = "complete"
+				}
+				if r.Repository.Name == result.Repository {
+					if r.Merged && !r.Removed {
+						p.Cleanup = "blocked"
+					} else if !r.Merged {
+						p.Integration = "blocked"
+					}
+				}
+				result.Progress = append(result.Progress, p)
 			}
-			result.Progress = append(result.Progress, p)
 		}
 		selector := m.Tag
 		if command == "create" {

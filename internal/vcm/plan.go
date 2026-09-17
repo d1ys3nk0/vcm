@@ -93,13 +93,16 @@ func (e *Engine) enrichPlan(plan OperationPlan, m *Manifest) OperationPlan {
 		if m == nil {
 			return plan
 		}
+		if command == "merge" && e.Keep && !m.Keep && (m.State == StateMerging || m.State == StateFinalizing) {
+			plan.Blockers = append(plan.Blockers, "merge started without --keep; retention choice cannot change during retry")
+		}
 		if command == "refresh" && m.State != "ready" && m.State != "refreshing" {
 			plan.Blockers = append(plan.Blockers, "Change is not active or refreshing")
 		}
 		if command == "merge" && m.State != "ready" && m.State != "merging" && m.State != "merge-finalizing" {
 			plan.Blockers = append(plan.Blockers, "Change is not active or merging")
 		}
-		if command == "drop" && (m.State == "merging" || m.State == "merge-finalizing" || m.State == "refreshing") {
+		if command == "drop" && (m.State == "integrated" || m.State == "merging" || m.State == "merge-finalizing" || m.State == "refreshing") {
 			plan.Blockers = append(plan.Blockers, "finish the interrupted operation before dropping this Change")
 		}
 		if err := e.ensureCurrentSelection(m); err != nil {
@@ -216,6 +219,11 @@ func (e *Engine) enrichPlan(plan OperationPlan, m *Manifest) OperationPlan {
 			state = "complete"
 		}
 		add(r, "integration", r.Origin, "squash into local trunk "+r.Repository.Trunk, state)
+		if m.Keep || e.Keep {
+			plan.DeletesIgnoredContent = false
+			add(r, "retained", m.Workspace, "retain integrated worktrees until cleanup", "pending")
+			break
+		}
 		for i := len(states) - 1; i >= 0; i-- {
 			r := states[i]
 			state := "pending"
@@ -258,6 +266,12 @@ func (e *Engine) enrichPlan(plan OperationPlan, m *Manifest) OperationPlan {
 	case "refresh":
 		ordered := append(append([]RepoState{}, states[1:]...), states[0])
 		for _, r := range ordered {
+			if err := validateOrigin(r.Origin, r.Repository); err != nil {
+				plan.Blockers = append(plan.Blockers, err.Error())
+			}
+			if _, err := localBaseline(&r); err != nil {
+				plan.Blockers = append(plan.Blockers, err.Error())
+			}
 			add(r, "refresh", r.Path, "merge local trunk "+r.Repository.Trunk+" into Change", "pending")
 		}
 	default:
@@ -278,6 +292,9 @@ func (e *Engine) enrichPlan(plan OperationPlan, m *Manifest) OperationPlan {
 			}
 			effect := map[string]string{"bootstrap": "validate existing origin", "fetch": "fetch remote trunk into cached origin/" + r.Repository.Trunk, "pull": "fetch and rebase local trunk " + r.Repository.Trunk, "push": "fetch, validate, and publish trunk " + r.Repository.Trunk}[command]
 			if command == "push" {
+				if _, err := pushDestination(r.Origin); err != nil {
+					plan.Blockers = append(plan.Blockers, err.Error())
+				}
 				effect = "fetch remote trunk and validate publication"
 			}
 			if command == "pull" {
@@ -308,10 +325,11 @@ func (e *Engine) createPlanManifest(slug, only, except string) (*Manifest, error
 	if err != nil {
 		return nil, err
 	}
-	m := &Manifest{Version: 3, Tag: tag, Slug: slug, Origin: e.Root, Workspace: path, Config: e.Config, State: "creating", Hooks: map[string]HookState{}}
+	m := &Manifest{Version: 4, Tag: tag, Slug: slug, Origin: e.Root, Workspace: path, Config: e.Config, State: "creating", Hooks: map[string]HookState{}}
 	m.Repositories = append(m.Repositories, RepoState{Repository: Repository{Name: "root", URL: url, Trunk: e.Config.Root.Trunk}, Origin: e.Root, Path: path})
 	for _, r := range selected {
 		m.Repositories = append(m.Repositories, RepoState{Repository: r, Origin: filepath.Join(e.Root, r.Path), Path: filepath.Join(path, r.Path)})
 	}
+	m.Recorded = e.recordConfiguration(m)
 	return m, nil
 }

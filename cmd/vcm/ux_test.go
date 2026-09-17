@@ -190,7 +190,7 @@ func TestInitRejectsLinkedWorktree(t *testing.T) {
 
 func TestMissingConfiguredSelectedRepositoryIsReported(t *testing.T) {
 	root, m := cliManagedChange(t)
-	// Record a selected child whose configuration was subsequently removed.
+	// A legacy checkpoint remains inspectable after a selected configuration is removed.
 	filename := filepath.Join(root, ".git", "vcm", m.Tag+".json")
 	raw, err := os.ReadFile(filename)
 	if err != nil {
@@ -200,6 +200,7 @@ func TestMissingConfiguredSelectedRepositoryIsReported(t *testing.T) {
 	if err = json.Unmarshal(raw, &state); err != nil {
 		t.Fatal(err)
 	}
+	state["version"] = 3
 	state["repositories"].(map[string]any)["retired"] = map[string]any{}
 	raw, err = json.Marshal(state)
 	if err != nil {

@@ -15,8 +15,10 @@ import (
 )
 
 type HookState struct {
-	Status string `json:"status"`
-	Error  string `json:"error,omitempty"`
+	Status     string `json:"status"`
+	Error      string `json:"error,omitempty"`
+	Definition string `json:"definition,omitempty"`
+	Generation int    `json:"generation,omitempty"`
 }
 
 // RepoState is hydrated from current configuration; only lifecycle fields persist.
@@ -30,32 +32,48 @@ type RepoState struct {
 	TargetBefore string     `json:"target_before,omitempty"`
 	MergeTree    string     `json:"merge_tree,omitempty"`
 	MergeCommit  string     `json:"merge_commit,omitempty"`
-	Intent       string     `json:"intent,omitempty"`
+	Intent       Intent     `json:"intent,omitempty"`
 	Owned        bool       `json:"owned"`
 	Merged       bool       `json:"merged"`
 	Removed      bool       `json:"removed"`
 }
 type Manifest struct {
-	Version      int                  `json:"-"`
-	Tag          string               `json:"-"`
-	Slug         string               `json:"-"`
-	Workspace    string               `json:"-"`
-	Origin       string               `json:"-"`
-	Config       Config               `json:"-"`
-	State        string               `json:"-"`
-	Repositories []RepoState          `json:"-"`
-	Hooks        map[string]HookState `json:"-"`
-	Backups      []string             `json:"-"`
-	Missing      []string             `json:"-"`
-	MergeMessage string               `json:"-"`
+	ExpansionAdded  []string               `json:"-"`
+	HookHistory     map[string][]HookState `json:"-"`
+	Recorded        []RecordedRepository   `json:"-"`
+	Generation      int                    `json:"-"`
+	Expansion       []string               `json:"-"`
+	Keep            bool                   `json:"-"`
+	RestoreSnapshot *Snapshot              `json:"-"`
+	Published       map[string]string      `json:"-"`
+	Version         int                    `json:"-"`
+	Tag             string                 `json:"-"`
+	Slug            string                 `json:"-"`
+	Workspace       string                 `json:"-"`
+	Origin          string                 `json:"-"`
+	Config          Config                 `json:"-"`
+	State           Lifecycle              `json:"-"`
+	Repositories    []RepoState            `json:"-"`
+	Hooks           map[string]HookState   `json:"-"`
+	Backups         []string               `json:"-"`
+	Missing         []string               `json:"-"`
+	MergeMessage    string                 `json:"-"`
 }
 type persistedManifest struct {
-	Version      int                           `json:"version"`
-	State        string                        `json:"state"`
-	Repositories map[string]persistedRepoState `json:"repositories"`
-	Hooks        map[string]HookState          `json:"hooks"`
-	Backups      []string                      `json:"backups,omitempty"`
-	MergeMessage string                        `json:"merge_message,omitempty"`
+	ExpansionAdded  []string                      `json:"expansion_added,omitempty"`
+	HookHistory     map[string][]HookState        `json:"hook_history,omitempty"`
+	Recorded        []RecordedRepository          `json:"configuration,omitempty"`
+	Generation      int                           `json:"generation,omitempty"`
+	Expansion       []string                      `json:"expansion,omitempty"`
+	Keep            bool                          `json:"keep,omitempty"`
+	RestoreSnapshot *Snapshot                     `json:"restore_snapshot,omitempty"`
+	Published       map[string]string             `json:"published,omitempty"`
+	Version         int                           `json:"version"`
+	State           Lifecycle                     `json:"state"`
+	Repositories    map[string]persistedRepoState `json:"repositories"`
+	Hooks           map[string]HookState          `json:"hooks"`
+	Backups         []string                      `json:"backups,omitempty"`
+	MergeMessage    string                        `json:"merge_message,omitempty"`
 }
 type persistedRepoState struct {
 	Base         string `json:"base,omitempty"`
@@ -64,7 +82,7 @@ type persistedRepoState struct {
 	TargetBefore string `json:"target_before,omitempty"`
 	MergeTree    string `json:"merge_tree,omitempty"`
 	MergeCommit  string `json:"merge_commit,omitempty"`
-	Intent       string `json:"intent,omitempty"`
+	Intent       Intent `json:"intent,omitempty"`
 	Owned        bool   `json:"owned,omitempty"`
 	Merged       bool   `json:"merged,omitempty"`
 	Removed      bool   `json:"removed,omitempty"`
@@ -107,7 +125,12 @@ func validateIdentity(tag string) error {
 	return nil
 }
 func validatePersisted(s store, tag string, p *persistedManifest) error {
-	if p.Version != 1 && p.Version != 2 && p.Version != 3 {
+	if p.Version == 4 {
+		if err := validateVersionFour(p); err != nil {
+			return err
+		}
+	}
+	if p.Version != 1 && p.Version != 2 && p.Version != 3 && p.Version != 4 {
 		return fmt.Errorf("invalid state version %d", p.Version)
 	}
 	if err := validateIdentity(tag); err != nil {
@@ -146,7 +169,7 @@ func validatePersisted(s store, tag string, p *persistedManifest) error {
 		}
 	}
 	switch p.State {
-	case "creating", "ready", "refreshing", "merging", "merge-finalizing", "dropping", "dropped":
+	case "creating", "ready", "refreshing", "merging", "merge-finalizing", "dropping", "dropped", "expanding", "restoring", "integrated":
 	default:
 		return fmt.Errorf("invalid manifest lifecycle state")
 	}
@@ -181,14 +204,14 @@ func validHookOutcomeKey(key string, repositories map[string]persistedRepoState)
 	return hookPhases[parts[1]]
 }
 func persisted(m *Manifest) persistedManifest {
-	p := persistedManifest{Version: 3, State: m.State, Repositories: map[string]persistedRepoState{}, Hooks: m.Hooks, Backups: m.Backups, MergeMessage: m.MergeMessage}
+	p := persistedManifest{Version: m.Version, ExpansionAdded: m.ExpansionAdded, HookHistory: m.HookHistory, Recorded: m.Recorded, Generation: m.Generation, Expansion: m.Expansion, Keep: m.Keep, RestoreSnapshot: m.RestoreSnapshot, Published: m.Published, State: m.State, Repositories: map[string]persistedRepoState{}, Hooks: m.Hooks, Backups: m.Backups, MergeMessage: m.MergeMessage}
 	for _, r := range m.Repositories {
 		p.Repositories[r.Repository.Name] = persistedRepoState{r.Base, r.Source, r.Target, r.TargetBefore, r.MergeTree, r.MergeCommit, r.Intent, r.Owned, r.Merged, r.Removed}
 	}
 	return p
 }
 func (s store) save(m *Manifest) error {
-	if m.Version != 1 && m.Version != 2 && m.Version != 3 {
+	if m.Version != 1 && m.Version != 2 && m.Version != 3 && m.Version != 4 {
 		return fmt.Errorf("invalid state version %d", m.Version)
 	}
 	if m.Version < 3 && m.State == "creating" {
@@ -255,7 +278,7 @@ func (s store) hydrate(tag string, p persistedManifest) (*Manifest, error) {
 	} else if err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
-	m := &Manifest{Version: p.Version, Tag: tag, Slug: tag[13:], Workspace: workspace, Origin: root, Config: config, State: p.State, Hooks: p.Hooks, Backups: p.Backups, MergeMessage: p.MergeMessage}
+	m := &Manifest{Version: p.Version, ExpansionAdded: p.ExpansionAdded, HookHistory: p.HookHistory, Recorded: p.Recorded, Generation: p.Generation, Expansion: p.Expansion, Keep: p.Keep, RestoreSnapshot: p.RestoreSnapshot, Published: p.Published, Tag: tag, Slug: tag[13:], Workspace: workspace, Origin: root, Config: config, State: p.State, Hooks: p.Hooks, Backups: p.Backups, MergeMessage: p.MergeMessage}
 	rootURL, _ := git(root, "remote", "get-url", "origin")
 	appendState := func(repository Repository) {
 		state := p.Repositories[repository.Name]

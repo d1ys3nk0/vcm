@@ -77,5 +77,5 @@ func (e *Engine) finalizeRefreshRecovery(m *Manifest, r *RepoState, recovery ref
 }
 
 func refreshCheckpoint(r *RepoState) string {
-	return r.Base + "\x00" + r.Source + "\x00" + r.TargetBefore + "\x00" + r.MergeTree + "\x00" + r.MergeCommit + "\x00" + r.Intent
+	return r.Base + "\x00" + r.Source + "\x00" + r.TargetBefore + "\x00" + r.MergeTree + "\x00" + r.MergeCommit + "\x00" + string(r.Intent)
 }

@@ -74,6 +74,7 @@ func run(args []string) error {
 		return &vcm.Error{Code: "configuration", Err: err}
 	}
 	engine.DryRun = dry
+	engine.Keep = opts.keep
 	engine.Style = func(semantic vcm.LogSemantic, text string) string {
 		color := semanticNone
 		switch semantic {
@@ -98,6 +99,9 @@ func run(args []string) error {
 		}
 		engine.SkipMergeHooks = phases
 	}
+	if handled, err := runExtended(engine, command, arg, workspace, cwd, opts, output); handled {
+		return err
+	}
 	var result any
 	switch command {
 	case "_complete":
@@ -118,7 +122,11 @@ func run(args []string) error {
 		fmt.Fprintln(os.Stdout, path)
 		return nil
 	case "recover":
-		result, err = engine.Recover(arg, workspace, opts.retryHook, opts.acknowledge)
+		if opts.adoptConfig {
+			result, err = engine.AdoptConfiguration(arg, workspace)
+		} else {
+			result, err = engine.Recover(arg, workspace, opts.retryHook, opts.acknowledge)
+		}
 	case "list":
 		result, err = inspectList(engine, workspace, opts.all, opts.verbose)
 	case "status":

@@ -69,7 +69,7 @@ func localBaseline(r *RepoState) (string, error) {
 	if err != nil || b != r.Repository.Trunk {
 		return "", failure("preflight", r.Repository.Name, fmt.Errorf("repository %s: canonical checkout must be on trunk %s", r.Repository.Name, r.Repository.Trunk))
 	}
-	return head(r.Origin)
+	return git(r.Origin, "rev-parse", "refs/heads/"+r.Repository.Trunk)
 }
 
 // Path resolves an existing managed checkout without executing hooks.
@@ -113,6 +113,9 @@ func (e *Engine) Recover(selector, context, key string, acknowledged bool) (Reco
 		if err != nil {
 			return err
 		}
+		if m.Version < 4 {
+			return fmt.Errorf("legacy interrupted Change must finish with previous VCM binary")
+		}
 		result.Change = m.Tag
 		parts := strings.Split(key, "/")
 		if len(parts) != 3 || m.Hooks[key].Status != "running" {
@@ -124,7 +127,7 @@ func (e *Engine) Recover(selector, context, key string, acknowledged bool) (Reco
 		}
 		operation := ""
 		switch m.State {
-		case "creating":
+		case "creating", "expanding":
 			operation = "create"
 		case "merging", "merge-finalizing":
 			operation = "merge"
@@ -145,7 +148,18 @@ func (e *Engine) Recover(selector, context, key string, acknowledged bool) (Reco
 			}
 		}
 		if !found {
-			return fmt.Errorf("hook %s no longer exists in current configuration", key)
+			for _, record := range m.Recorded {
+				if record.Repository.Name == parts[0] {
+					for _, h := range record.Hooks[phase] {
+						if h.ID == parts[2] {
+							found = true
+						}
+					}
+				}
+			}
+		}
+		if !found {
+			return fmt.Errorf("hook %s has no recorded definition", key)
 		}
 		var repository *RepoState
 		for i := range m.Repositories {
@@ -186,6 +200,12 @@ func (e *Engine) Recover(selector, context, key string, acknowledged bool) (Reco
 				result.RetryCommand += " --except " + strings.Join(all, ",")
 			}
 		}
+		if m.State == "expanding" {
+			result.RetryCommand = "vcm add " + m.Tag + " --only " + strings.Join(m.Expansion, ",")
+		}
+		if m.Keep && m.State == "merge-finalizing" {
+			result.RetryCommand = "vcm cleanup " + m.Tag
+		}
 		result.RetryCommand += " --workspace " + quoteArgument(m.Origin)
 		if !acknowledged {
 			return fmt.Errorf("inspect external effects of %s, then pass --acknowledge-effects to authorize its retry", key)
@@ -193,7 +213,10 @@ func (e *Engine) Recover(selector, context, key string, acknowledged bool) (Reco
 		if e.DryRun {
 			return nil
 		}
-		m.Hooks[key] = HookState{Status: "failed", Error: "retry explicitly authorized after inspection of external effects"}
+		outcome := m.Hooks[key]
+		outcome.Status = "failed"
+		outcome.Error = "retry explicitly authorized after inspection of external effects"
+		m.Hooks[key] = outcome
 		return e.store.save(m)
 	}
 	var err error

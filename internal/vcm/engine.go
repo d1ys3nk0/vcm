@@ -26,6 +26,7 @@ type Engine struct {
 	IgnoreHookFailures bool
 	SkipMergeHooks     map[string]bool
 	SkipHookGitHooks   bool
+	Keep               bool
 	DryRun             bool
 }
 
@@ -416,6 +417,9 @@ func (e *Engine) ensureCurrentSelection(m *Manifest) error {
 	if len(m.Missing) > 0 {
 		return fmt.Errorf("selected repository %s is absent from current configuration; restore its vcm.yml entry before retrying", strings.Join(m.Missing, ", "))
 	}
+	if err := e.requireConfiguration(m); err != nil {
+		return err
+	}
 	names := selectedNames(m)
 	for _, repository := range e.Config.Children {
 		if !names[repository.Name] {
@@ -465,11 +469,12 @@ func (e *Engine) CreateSelected(slug, only, except string) (*Manifest, error) {
 	if err != nil {
 		return nil, err
 	}
-	m := &Manifest{Version: 3, Tag: tag, Slug: slug, Workspace: path, Origin: e.Root, Config: e.Config, State: "creating", Hooks: map[string]HookState{}}
+	m := &Manifest{Version: 4, Tag: tag, Slug: slug, Workspace: path, Origin: e.Root, Config: e.Config, State: "creating", Hooks: map[string]HookState{}}
 	m.Repositories = append(m.Repositories, RepoState{Repository: Repository{Name: "root", URL: rootURL, Trunk: e.Config.Root.Trunk, Hooks: e.Config.Root.Hooks}, Origin: e.Root, Path: path})
 	for _, r := range selected {
 		m.Repositories = append(m.Repositories, RepoState{Repository: r, Origin: filepath.Join(e.Root, r.Path), Path: filepath.Join(path, r.Path)})
 	}
+	m.Recorded = e.recordConfiguration(m)
 	if err = e.preflightCreate(m); err != nil {
 		return nil, err
 	}
@@ -572,6 +577,17 @@ func (e *Engine) resumeCreate(m *Manifest) error {
 	}
 	for i := range m.Repositories {
 		r := &m.Repositories[i]
+		if m.State == StateExpanding && i > 0 {
+			added := false
+			for _, name := range m.ExpansionAdded {
+				if name == r.Repository.Name {
+					added = true
+				}
+			}
+			if !added {
+				continue
+			}
+		}
 		if !r.Owned {
 			if i > 0 {
 				if err := e.hooksAt(m, r, HookCreateBefore, r.Origin, false); err != nil {
@@ -644,9 +660,17 @@ func (e *Engine) hooks(m *Manifest, r *RepoState, phase string) error {
 
 func (e *Engine) hooksAt(m *Manifest, r *RepoState, phase, directory string, updateSource bool) (hookErr error) {
 	defer classify(&hookErr, "hook_failure", r.Repository.Name)
+	if err := e.requireConfiguration(m); err != nil {
+		return err
+	}
 	current, err := readConfig(m.Origin)
 	if err != nil {
 		return fmt.Errorf("read current hook configuration: %w", err)
+	}
+	fresh := *e
+	fresh.Config = current
+	if err := fresh.requireConfiguration(m); err != nil {
+		return err
 	}
 	hooks, err := hooksFor(current, r.Repository.Name)
 	if err != nil {
@@ -678,7 +702,7 @@ func (e *Engine) hooksAt(m *Manifest, r *RepoState, phase, directory string, upd
 			if headErr != nil {
 				return headErr
 			}
-			if actual != expected {
+			if actual != expected && !(phase == HookMergeAfter && m.Keep && ancestor(directory, expected, actual)) {
 				return fmt.Errorf("repository %s: base changed after %s checkpoint; restore recorded revision before retry", r.Repository.Name, phase)
 			}
 		}
@@ -703,7 +727,7 @@ func (e *Engine) hooksAt(m *Manifest, r *RepoState, phase, directory string, upd
 				return fmt.Errorf("repository %s phase %s hook %s Git configuration: %w", r.Repository.Name, phase, h.ID, err)
 			}
 		}
-		m.Hooks[key] = HookState{Status: "running"}
+		m.Hooks[key] = HookState{Status: "running", Definition: fingerprint(h), Generation: m.Generation}
 		if err := e.store.save(m); err != nil {
 			return err
 		}
@@ -724,7 +748,7 @@ func (e *Engine) hooksAt(m *Manifest, r *RepoState, phase, directory string, upd
 		}
 		processErr := cmd.Run()
 		if flushErr := hookOutput.Flush(); flushErr != nil {
-			m.Hooks[key] = HookState{Status: "failed", Error: flushErr.Error()}
+			m.Hooks[key] = HookState{Status: "failed", Definition: fingerprint(h), Generation: m.Generation, Error: flushErr.Error()}
 			if saveErr := e.store.save(m); saveErr != nil {
 				return saveErr
 			}
@@ -735,7 +759,7 @@ func (e *Engine) hooksAt(m *Manifest, r *RepoState, phase, directory string, upd
 			if processErr != nil {
 				detail = processErr.Error() + "; " + detail
 			}
-			m.Hooks[key] = HookState{Status: "failed", Error: detail}
+			m.Hooks[key] = HookState{Status: "failed", Definition: fingerprint(h), Generation: m.Generation, Error: detail}
 			if saveErr := e.store.save(m); saveErr != nil {
 				return saveErr
 			}
@@ -747,7 +771,7 @@ func (e *Engine) hooksAt(m *Manifest, r *RepoState, phase, directory string, upd
 				if revisionErr := e.recordHookRevision(r, phase, directory, updateSource, basePhase); revisionErr != nil {
 					return revisionErr
 				}
-				m.Hooks[key] = HookState{Status: "failed", Error: processErr.Error()}
+				m.Hooks[key] = HookState{Status: "failed", Definition: fingerprint(h), Generation: m.Generation, Error: processErr.Error()}
 				if saveErr := e.store.save(m); saveErr != nil {
 					return saveErr
 				}
@@ -756,7 +780,7 @@ func (e *Engine) hooksAt(m *Manifest, r *RepoState, phase, directory string, upd
 				}
 				continue
 			}
-			m.Hooks[key] = HookState{Status: "failed", Error: processErr.Error()}
+			m.Hooks[key] = HookState{Status: "failed", Definition: fingerprint(h), Generation: m.Generation, Error: processErr.Error()}
 			if saveErr := e.store.save(m); saveErr != nil {
 				return saveErr
 			}
@@ -765,7 +789,7 @@ func (e *Engine) hooksAt(m *Manifest, r *RepoState, phase, directory string, upd
 		if err = e.recordHookRevision(r, phase, directory, updateSource, basePhase); err != nil {
 			return err
 		}
-		m.Hooks[key] = HookState{Status: "complete"}
+		m.Hooks[key] = HookState{Status: "complete", Definition: fingerprint(h), Generation: m.Generation}
 		if err = e.store.save(m); err != nil {
 			return err
 		}
@@ -867,7 +891,7 @@ func hooksFor(config Config, repository string) (Hooks, error) {
 func (e *Engine) Status(m *Manifest) StatusReport {
 	repos := []RepositoryStatus{}
 	for _, r := range m.Repositories {
-		state := RepositoryStatus{Name: r.Repository.Name, Path: r.Path, Merged: r.Merged, Removed: r.Removed, Intent: r.Intent, RecordedTarget: r.TargetBefore}
+		state := RepositoryStatus{Name: r.Repository.Name, Path: r.Path, Merged: r.Merged, Removed: r.Removed, Intent: string(r.Intent), RecordedTarget: r.TargetBefore}
 		if r.Repository.Name != "root" && r.Path == "" {
 			state.Error = fmt.Sprintf("selected repository %s is absent from current configuration; restore its vcm.yml entry", r.Repository.Name)
 			repos = append(repos, state)

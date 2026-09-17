@@ -26,6 +26,7 @@ type TreeRepository struct {
 }
 
 type TreeReport struct {
+	Manifest     *Manifest `json:"-"`
 	Workspace    string
 	Context      string
 	Change       string
@@ -180,7 +181,17 @@ func (e *Engine) Tree(cwd string) (TreeReport, error) {
 	if err != nil {
 		return TreeReport{}, err
 	}
-	report := TreeReport{Workspace: e.Root, Context: "base"}
+	if !inChange {
+		manifest = nil
+	}
+	return e.TreeManifest(manifest)
+}
+
+// TreeManifest inspects an already loaded Change without reloading the store.
+// A nil manifest inspects the canonical workspace.
+func (e *Engine) TreeManifest(manifest *Manifest) (TreeReport, error) {
+	inChange := manifest != nil
+	report := TreeReport{Manifest: manifest, Workspace: e.Root, Context: "base"}
 	if inChange {
 		report.Workspace = manifest.Workspace
 		report.Context = "change"

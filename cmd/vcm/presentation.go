@@ -59,19 +59,19 @@ type createResult struct {
 	Tag          string                   `json:"tag"`
 	Slug         string                   `json:"slug"`
 	Workspace    string                   `json:"workspace"`
-	State        string                   `json:"state"`
+	State        vcm.Lifecycle            `json:"state"`
 	Repositories []createRepositoryResult `json:"repositories"`
 }
 
 type listResult struct {
-	Tag             string    `json:"tag"`
-	Slug            string    `json:"slug"`
-	Workspace       string    `json:"workspace"`
-	State           string    `json:"state"`
-	CreatedAt       time.Time `json:"created_at"`
-	RepositoryCount int       `json:"repository_count"`
-	MergedCount     int       `json:"merged_count"`
-	RemovedCount    int       `json:"removed_count"`
+	Tag             string        `json:"tag"`
+	Slug            string        `json:"slug"`
+	Workspace       string        `json:"workspace"`
+	State           vcm.Lifecycle `json:"state"`
+	CreatedAt       time.Time     `json:"created_at"`
+	RepositoryCount int           `json:"repository_count"`
+	MergedCount     int           `json:"merged_count"`
+	RemovedCount    int           `json:"removed_count"`
 	current         bool
 }
 
@@ -117,7 +117,7 @@ type statusResult struct {
 	Tag               string                   `json:"tag"`
 	Slug              string                   `json:"slug"`
 	Workspace         string                   `json:"workspace"`
-	State             string                   `json:"state"`
+	State             vcm.Lifecycle            `json:"state"`
 	CreatedAt         time.Time                `json:"created_at"`
 	Repositories      []statusRepositoryResult `json:"repositories"`
 	Hooks             []hookResult             `json:"hooks"`
@@ -135,7 +135,7 @@ type mergeRepositoryResult struct {
 
 type mergeResult struct {
 	Tag          string                  `json:"tag"`
-	State        string                  `json:"state"`
+	State        vcm.Lifecycle           `json:"state"`
 	Repositories []mergeRepositoryResult `json:"repositories"`
 	Backups      []string                `json:"backups"`
 }
@@ -147,7 +147,7 @@ type refreshRepositoryResult struct {
 }
 type refreshResult struct {
 	Tag          string                    `json:"tag"`
-	State        string                    `json:"state"`
+	State        vcm.Lifecycle             `json:"state"`
 	Repositories []refreshRepositoryResult `json:"repositories"`
 }
 
@@ -158,7 +158,7 @@ type dropRepositoryResult struct {
 
 type dropResult struct {
 	Tag          string                 `json:"tag"`
-	State        string                 `json:"state"`
+	State        vcm.Lifecycle          `json:"state"`
 	Repositories []dropRepositoryResult `json:"repositories"`
 	Backups      []string               `json:"backups"`
 }
@@ -454,6 +454,42 @@ func renderHuman(out io.Writer, result any) error {
 
 func renderHumanStyled(out io.Writer, result any, style humanStyle) error {
 	switch value := result.(type) {
+	case publicationResult:
+		for _, r := range value.Repositories {
+			fmt.Fprintf(out, "%s %s %s\n", r.Name, r.Ref, r.SHA)
+		}
+		return nil
+	case vcm.ConfigurationAdoption:
+		fmt.Fprintf(out, "Configuration %s\n", value.Change)
+		for _, change := range value.Changes {
+			fmt.Fprintln(out, change)
+		}
+		if value.RetryCommand != "" {
+			fmt.Fprintln(out, "Next: "+value.RetryCommand)
+		}
+		return nil
+	case vcm.DiffReport:
+		for _, r := range value.Repositories {
+			fmt.Fprintf(out, "%s (%s..%s)\n", r.Name, r.Base, r.Source)
+			if r.Error != "" {
+				fmt.Fprintln(out, "  "+r.Error)
+				continue
+			}
+			for _, f := range r.Files {
+				if f.Binary {
+					fmt.Fprintf(out, "  binary %s\n", f.Path)
+				} else {
+					fmt.Fprintf(out, "  +%d -%d %s\n", f.Added, f.Deleted, f.Path)
+				}
+			}
+			for _, p := range r.Untracked {
+				fmt.Fprintf(out, "  untracked %s\n", p)
+			}
+			if r.Patch != "" {
+				fmt.Fprint(out, r.Patch)
+			}
+		}
+		return nil
 	case inspectionResult:
 		return renderInspection(out, value, style)
 	case overviewResult:
@@ -518,7 +554,7 @@ func renderHumanStyled(out io.Writer, result any, style humanStyle) error {
 		_, err := fmt.Fprintf(out, "%s Change %s with %d repositories.\n%s %s\n", style.paint(semanticGreen, "Created"), value.Tag, len(value.Repositories), style.paint(semanticCyanBold, "Workspace:"), value.Workspace)
 		return err
 	case statusResult:
-		if _, err := fmt.Fprintf(out, "%s %s\n%s %s\n%s %s\n%s %s\n\n", style.paint(semanticCyanBold, "Change:"), value.Tag, style.paint(semanticCyanBold, "State:"), style.paint(statusColor(value.State), value.State), style.paint(semanticCyanBold, "Created:"), value.CreatedAt.Format(time.RFC3339), style.paint(semanticCyanBold, "Workspace:"), value.Workspace); err != nil {
+		if _, err := fmt.Fprintf(out, "%s %s\n%s %s\n%s %s\n%s %s\n\n", style.paint(semanticCyanBold, "Change:"), value.Tag, style.paint(semanticCyanBold, "State:"), style.paint(statusColor(string(value.State)), string(value.State)), style.paint(semanticCyanBold, "Created:"), value.CreatedAt.Format(time.RFC3339), style.paint(semanticCyanBold, "Workspace:"), value.Workspace); err != nil {
 			return err
 		}
 		repositories := [][]string{tableHeader(style, "Repository", "Status", "HEAD", "Recorded target", "Current target", "Recovery", "Detail")}
@@ -557,6 +593,10 @@ func renderHumanStyled(out io.Writer, result any, style humanStyle) error {
 		}
 		return nil
 	case mergeResult:
+		if value.State == "integrated" {
+			_, err := fmt.Fprintf(out, "Change %s integrated — cleanup pending.\n", value.Tag)
+			return err
+		}
 		merged := 0
 		for _, repository := range value.Repositories {
 			if repository.Merged {

@@ -219,6 +219,13 @@ func TestMergeMessageContract(t *testing.T) {
 	allow := filepath.Join(filepath.Dir(e.Root), "allow-message-merge")
 	e.Config.Root.Hooks = Hooks{HookMergeBefore: {{ID: "stop", Shell: `test -f "` + allow + `"`}}}
 	saveContractConfig(t, e)
+	if _, err = e.AdoptConfiguration(m.Tag, e.Root); err != nil {
+		t.Fatal(err)
+	}
+	m, err = e.Select(m.Tag, e.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err = e.Refresh(m); err != nil {
 		t.Fatal(err)
 	}
@@ -728,7 +735,7 @@ func TestMergeIgnoreHookFailuresPreservesOwnershipConflictAndIncompleteLifecycle
 			if err != nil {
 				t.Fatal(err)
 			}
-			m.State = state
+			m.State = Lifecycle(state)
 			e.IgnoreHookFailures = true
 			if err = e.Merge(m); err == nil || !strings.Contains(strings.ToLower(err.Error()), strings.TrimSuffix(state, "ing")) {
 				t.Fatalf("force accepted incomplete %s lifecycle: %v", state, err)
@@ -1161,6 +1168,13 @@ func TestPostMergeFailureResumesWithoutDuplicate(t *testing.T) {
 	sentinel := filepath.Join(filepath.Dir(e.Root), "allow")
 	e.Config.Root.Hooks = Hooks{HookMergeAfter: {{ID: "gate", Shell: "test -f " + sentinel}}}
 	saveContractConfig(t, e)
+	if _, err = e.AdoptConfiguration(m.Tag, e.Root); err != nil {
+		t.Fatal(err)
+	}
+	m, err = e.Select(m.Tag, e.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err = e.Refresh(m); err != nil {
 		t.Fatal(err)
 	}

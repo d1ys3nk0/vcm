@@ -48,7 +48,7 @@ func (e *Engine) Drop(m *Manifest) error {
 	if m.State == "dropped" {
 		return nil
 	}
-	if m.State == "merge-finalizing" || m.State == "merging" {
+	if m.State == "integrated" || m.State == "merge-finalizing" || m.State == "merging" {
 		return fmt.Errorf("Change merge is incomplete; retry merge %s", m.Tag)
 	}
 	if m.State == "refreshing" {
@@ -379,11 +379,11 @@ func (e *Engine) checkDropTarget(r *RepoState) error {
 	if !r.Merged {
 		return nil
 	}
-	target, err := head(r.Origin)
+	target, err := localBaseline(r)
 	if err != nil {
 		return err
 	}
-	if target != r.Target {
+	if target != r.Target && !ancestor(r.Origin, r.Target, target) {
 		return fmt.Errorf("repository %s: merged target changed before cleanup; restore recorded target before retry", r.Repository.Name)
 	}
 	return nil
@@ -602,6 +602,15 @@ func (e *Engine) mergeOne(m *Manifest, r *RepoState) error {
 }
 
 func (e *Engine) Merge(m *Manifest, messages ...string) error {
+	if e.Keep && !m.Keep && (m.State == StateMerging || m.State == StateFinalizing) {
+		return fmt.Errorf("merge already started without --keep; retention choice cannot change during retry")
+	}
+	if m.State == "integrated" || m.Keep && m.State == "merge-finalizing" {
+		return fmt.Errorf("Change integrated; run vcm cleanup %s", m.Tag)
+	}
+	if m.State == "expanding" || m.State == "restoring" {
+		return fmt.Errorf("Change %s operation is incomplete", m.State)
+	}
 	if err := e.ensureCurrentSelection(m); err != nil {
 		return err
 	}
@@ -651,6 +660,7 @@ func (e *Engine) Merge(m *Manifest, messages ...string) error {
 			m.Repositories[i].Source = revision
 		}
 		m.MergeMessage = effective
+		m.Keep = m.Keep || e.Keep
 		m.State = "merging"
 		if err := e.store.save(m); err != nil {
 			return err
@@ -687,10 +697,67 @@ func (e *Engine) Merge(m *Manifest, messages ...string) error {
 			return err
 		}
 		m.State = "merge-finalizing"
+		if m.Keep {
+			m.State = "integrated"
+		}
 		if err := e.store.save(m); err != nil {
 			return err
 		}
 	}
+	if m.State == "integrated" {
+		return nil
+	}
+	return e.finalizeMerge(m)
+}
+
+func (e *Engine) Cleanup(m *Manifest) error {
+	if err := e.ensureCurrentSelection(m); err != nil {
+		return err
+	}
+	if m.State != "integrated" && !(m.State == "merge-finalizing" && m.Keep) {
+		return fmt.Errorf("Change has no retained integration awaiting cleanup")
+	}
+	for i := range m.Repositories {
+		r := &m.Repositories[i]
+		if err := validateOrigin(r.Origin, r.Repository); err != nil {
+			return err
+		}
+		if _, err := localBaseline(r); err != nil {
+			return err
+		}
+		if err := e.checkDropTarget(r); err != nil {
+			return err
+		}
+		if !r.Removed {
+			if r.Intent == "remove" {
+				if _, err := os.Stat(r.Path); os.IsNotExist(err) {
+					continue
+				}
+			}
+			if err := e.owned(m, r); err != nil {
+				return err
+			}
+			if err := clean(r.Path); err != nil {
+				return err
+			}
+			source, err := head(r.Path)
+			if err != nil {
+				return err
+			}
+			if source != r.Source {
+				return fmt.Errorf("repository %s source changed after integration", r.Repository.Name)
+			}
+		}
+	}
+	m.State = "merge-finalizing"
+	if err := e.store.save(m); err != nil {
+		return err
+	}
+	return e.finalizeMerge(m)
+}
+
+func (e *Engine) finalizeMerge(m *Manifest) error {
+	root := &m.Repositories[0]
 	if err := e.removeAll("merge", m); err != nil {
 		return err
 	}

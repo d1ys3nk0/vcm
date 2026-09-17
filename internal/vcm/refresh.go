@@ -15,6 +15,19 @@ func (e *Engine) Refresh(m *Manifest) error {
 	if m.State != "ready" && m.State != "refreshing" {
 		return fmt.Errorf("Change %s is not ready or recoverable-refresh", m.Tag)
 	}
+	// Validate every canonical checkout before recording or applying refresh.
+	for i := range m.Repositories {
+		r := &m.Repositories[i]
+		if err := validateOrigin(r.Origin, r.Repository); err != nil {
+			return err
+		}
+		if _, err := localBaseline(r); err != nil {
+			return err
+		}
+		if err := e.owned(m, r); err != nil {
+			return err
+		}
+	}
 	if m.State == "ready" {
 		m.State = "refreshing"
 		if err := e.store.save(m); err != nil {
@@ -35,7 +48,7 @@ func (e *Engine) Refresh(m *Manifest) error {
 				return err
 			}
 			if recovery.state == refreshRecoveryIncomplete {
-				target, targetErr := head(r.Origin)
+				target, targetErr := localBaseline(r)
 				if targetErr != nil {
 					return targetErr
 				}
@@ -57,7 +70,7 @@ func (e *Engine) Refresh(m *Manifest) error {
 				return fmt.Errorf("repository %s: refresh reconciliation made no observable progress", r.Repository.Name)
 			}
 		}
-		target, err := head(r.Origin)
+		target, err := localBaseline(r)
 		if err != nil {
 			return err
 		}

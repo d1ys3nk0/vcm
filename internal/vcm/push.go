@@ -3,12 +3,14 @@ package vcm
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 )
 
 type pushRepository struct {
-	repository Repository
-	path       string
-	local      string
+	repository  Repository
+	path        string
+	local       string
+	destination string
 }
 
 func (e *Engine) pushRepositories() ([]pushRepository, error) {
@@ -60,7 +62,12 @@ func (e *Engine) preflightPush(repository *pushRepository) error {
 	if current != local {
 		return fmt.Errorf("repository %s push preflight: HEAD does not match local trunk %s", r.Name, r.Trunk)
 	}
-	if _, err = git(repository.path, "fetch", "--no-tags", "origin", "refs/heads/"+r.Trunk); err != nil {
+	destination, err := pushDestination(repository.path)
+	if err != nil {
+		return err
+	}
+	repository.destination = destination
+	if _, err = git(repository.path, "fetch", "--no-tags", "--", destination, "refs/heads/"+r.Trunk); err != nil {
 		return fmt.Errorf("repository %s push preflight: fetch remote trunk %s: %w", r.Name, r.Trunk, err)
 	}
 	remote, err := git(repository.path, "rev-parse", "FETCH_HEAD")
@@ -103,11 +110,40 @@ func (e *Engine) Push() error {
 	}
 	for index, repository := range repositories {
 		r := repository.repository
-		refspec := "refs/heads/" + r.Trunk + ":refs/heads/" + r.Trunk
-		if _, err := git(repository.path, "push", "origin", refspec); err != nil {
+		if err := validateOrigin(repository.path, r); err != nil {
+			return publicationError(index, true, err)
+		}
+		current, err := localBaseline(&RepoState{Repository: r, Origin: repository.path})
+		if err != nil {
+			return publicationError(index, true, err)
+		}
+		if current != repository.local {
+			return publicationError(index, true, fmt.Errorf("repository %s: local trunk changed after publication preflight", r.Name))
+		}
+		destination, err := pushDestination(repository.path)
+		if err != nil {
+			return publicationError(index, true, err)
+		}
+		if destination != repository.destination {
+			return publicationError(index, true, fmt.Errorf("repository %s: publication destination changed after preflight", r.Name))
+		}
+		refspec := repository.local + ":refs/heads/" + r.Trunk
+		if _, err := git(repository.path, "push", "--", repository.destination, refspec); err != nil {
 			return publicationError(index, true, failure("external_command", r.Name, fmt.Errorf("repository %s push: %w; earlier repositories may already be published, inspect remotes and retry", r.Name, err)))
 		}
 		e.logOperationOutcome("push", r.Name, repository.path, "", "pushed", LogChanged, " trunk %s at %s", r.Trunk, abbreviateRevision(repository.local))
 	}
 	return nil
+}
+
+func pushDestination(path string) (string, error) {
+	value, err := git(path, "remote", "get-url", "--push", "--all", "origin")
+	if err != nil {
+		return "", err
+	}
+	urls := strings.Split(value, "\n")
+	if len(urls) != 1 || urls[0] == "" {
+		return "", fmt.Errorf("publication requires exactly one origin push URL")
+	}
+	return urls[0], nil
 }

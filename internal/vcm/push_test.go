@@ -157,3 +157,21 @@ func TestPushIsIdempotentAndRetryableAfterPartialPublication(t *testing.T) {
 		t.Fatalf("root retry did not publish: got %s, want %s", got, want)
 	}
 }
+
+func TestPushRejectsLaterLocalDrift(t *testing.T) {
+	e := fixture(t, 1)
+	rootBefore := mustGit(t, e.Root, "rev-parse", "HEAD")
+	commitFile(t, filepath.Join(e.Root, "repo0"), "publish", "publish")
+	hook := filepath.Join(e.Root, "repo0", ".git", "hooks", "pre-push")
+	put(t, hook, "#!/bin/sh\ngit -C '"+e.Root+"' -c core.hooksPath=/dev/null commit --allow-empty -m 'feat: concurrent' >/dev/null\n")
+	if err := os.Chmod(hook, 0755); err != nil {
+		t.Fatal(err)
+	}
+	err := e.Push()
+	if err == nil || !strings.Contains(err.Error(), "changed after publication preflight") {
+		t.Fatalf("expected drift error: %v", err)
+	}
+	if got := mustGit(t, remoteURL(t, e.Root), "rev-parse", "main"); got != rootBefore {
+		t.Fatal("unvalidated root revision published")
+	}
+}

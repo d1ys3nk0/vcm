@@ -161,7 +161,7 @@ func TestManifestDoesNotPersistConfiguration(t *testing.T) {
 	}
 }
 
-func TestVersionOneStateUpgradesOnMutation(t *testing.T) {
+func TestLegacyStateDoesNotImplicitlyUpgrade(t *testing.T) {
 	s, m := safetyFixture(t)
 	m.State = "ready"
 	if err := s.save(m); err != nil {
@@ -194,7 +194,7 @@ func TestVersionOneStateUpgradesOnMutation(t *testing.T) {
 	}
 	b, _ = os.ReadFile(filename)
 	_ = json.Unmarshal(b, &data)
-	if data["version"] != float64(3) {
+	if data["version"] != float64(1) {
 		t.Fatalf("written version = %v", data["version"])
 	}
 }

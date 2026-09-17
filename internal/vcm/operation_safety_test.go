@@ -136,3 +136,24 @@ func TestDropRechecksDownstreamHookSafety(t *testing.T) {
 		})
 	}
 }
+
+func TestRefreshRejectsWrongCanonicalBranchBeforeMutation(t *testing.T) {
+	e := fixture(t, 2)
+	m, err := e.Create("refresh-branch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := mustGit(t, m.Repositories[1].Path, "rev-parse", "HEAD")
+	commitFile(t, m.Repositories[1].Origin, "advance", "advance")
+	mustGit(t, m.Repositories[2].Origin, "checkout", "-b", "unrelated")
+	commitFile(t, m.Repositories[2].Origin, "unrelated", "unrelated")
+	if err := e.Refresh(m); err == nil {
+		t.Fatal("expected canonical branch rejection")
+	}
+	if m.State != "ready" {
+		t.Fatalf("state changed: %s", m.State)
+	}
+	if got := mustGit(t, m.Repositories[1].Path, "rev-parse", "HEAD"); got != first {
+		t.Fatal("earlier repository changed")
+	}
+}

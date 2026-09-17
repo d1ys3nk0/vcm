@@ -71,12 +71,14 @@ func printShell(shell string) error {
     [[ -n "$vcm_workspace" ]] && vcm_context=(--workspace "$vcm_workspace")
     if [[ "$vcm_previous" == --only || "$vcm_previous" == --except || "$vcm_word" == --only=* || "$vcm_word" == --except=* ]]; then
         vcm_kind=repositories
+        [[ "$vcm_command" == diff ]] && vcm_kind=diff-repositories
         [[ "$vcm_word" == *=* ]] && vcm_prefix="${vcm_word%%=*}=" && vcm_word="${vcm_word#*=}"
         [[ "$vcm_word" == *,* ]] && vcm_prefix="$vcm_prefix${vcm_word%,*}," && vcm_word="${vcm_word##*,}"
     elif [[ "$vcm_word" == -* ]]; then
         vcm_kind="flags:$vcm_command"
     elif [[ -z "$vcm_command" ]]; then vcm_kind=commands
     fi
+    if [[ "$vcm_command" == restore && "$vcm_kind" == changes ]]; then COMPREPLY=( $(compgen -f -- "$vcm_word") ); return; fi
     COMPREPLY=()
     while IFS= read -r vcm_item; do
         [[ "$vcm_item" == "$vcm_word"* ]] && COMPREPLY+=("$vcm_prefix$vcm_item")
@@ -100,11 +102,13 @@ complete -F _vcm_complete vcm
     [[ -n "$vcm_workspace" ]] && vcm_context=(--workspace "$vcm_workspace")
     if [[ "$vcm_previous" == --only || "$vcm_previous" == --except || "$vcm_word" == --only=* || "$vcm_word" == --except=* ]]; then
         vcm_kind=repositories
+        [[ "$vcm_command" == diff ]] && vcm_kind=diff-repositories
         [[ "$vcm_word" == *=* ]] && vcm_prefix="${vcm_word%%=*}=" && vcm_word="${vcm_word#*=}"
         [[ "$vcm_word" == *,* ]] && vcm_prefix="$vcm_prefix${vcm_word%,*},"
     elif [[ "$vcm_word" == -* ]]; then vcm_kind="flags:$vcm_command"
     elif [[ -z "$vcm_command" ]]; then vcm_kind=commands
     fi
+    if [[ "$vcm_command" == restore && "$vcm_kind" == changes ]]; then _files; return; fi
     vcm_values=("${(@f)$(command vcm "${vcm_context[@]}" _complete "$vcm_kind" 2>/dev/null)}")
     [[ -n "$vcm_prefix" ]] && compset -P "$vcm_prefix"
     compadd -- "${vcm_values[@]}"
@@ -140,7 +144,10 @@ func complete(engine *vcm.Engine, kind string) error {
 				}
 			}
 		}
-	case kind == "repositories":
+	case kind == "repositories" || kind == "diff-repositories":
+		if kind == "diff-repositories" {
+			fmt.Fprintln(os.Stdout, "root")
+		}
 		for _, r := range engine.Config.Children {
 			fmt.Fprintln(os.Stdout, r.Name)
 		}
