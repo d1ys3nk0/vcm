@@ -45,6 +45,18 @@ func TestPushPublishesDependenciesBeforeRoot(t *testing.T) {
 		if got, want := mustGit(t, remote, "rev-parse", "refs/heads/main"), mustGit(t, path, "rev-parse", "refs/heads/main"); got != want {
 			t.Fatalf("remote %s = %s, want %s", remote, got, want)
 		}
+		if got, want := mustGit(t, path, "rev-parse", "refs/remotes/origin/main"), mustGit(t, path, "rev-parse", "refs/heads/main"); got != want {
+			t.Fatalf("cached origin/main for %s = %s, want %s", path, got, want)
+		}
+	}
+	report, err := e.Tree(e.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, repository := range report.Repositories {
+		if repository.SyncState != "current" || repository.Ahead != 0 || repository.Behind != 0 {
+			t.Fatalf("repository %s status after push: %+v", repository.Name, repository)
+		}
 	}
 	log := output.String()
 	repo1 := strings.Index(log, "[push/repo1 @ "+filepath.Join(e.Root, "repo1")+"] pushed trunk main")

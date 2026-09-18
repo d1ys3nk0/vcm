@@ -131,6 +131,10 @@ func (e *Engine) Push() error {
 		if _, err := git(repository.path, "push", "--", repository.destination, refspec); err != nil {
 			return publicationError(index, true, failure("external_command", r.Name, fmt.Errorf("repository %s push: %w; earlier repositories may already be published, inspect remotes and retry", r.Name, err)))
 		}
+		remoteTrackingRef := "refs/remotes/origin/" + r.Trunk
+		if _, err := git(repository.path, "update-ref", remoteTrackingRef, repository.local); err != nil {
+			return publicationError(index, true, fmt.Errorf("repository %s: trunk was published but cached origin/%s could not be updated: %w", r.Name, r.Trunk, err))
+		}
 		e.logOperationOutcome("push", r.Name, repository.path, "", "pushed", LogChanged, " trunk %s at %s", r.Trunk, abbreviateRevision(repository.local))
 	}
 	return nil
