@@ -116,6 +116,37 @@ func TestBootstrapAndDiscovery(t *testing.T) {
 	}
 }
 
+func TestCreateExistingUsesOpaqueIDAndReleasesExternalRoot(t *testing.T) {
+	e := fixture(t, 0)
+	external := filepath.Join(filepath.Dir(e.Root), "harness-root")
+	mustGit(t, e.Root, "worktree", "add", "--detach", external, "HEAD")
+	m, err := e.CreateExisting("", external, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !workspaceIDPattern.MatchString(m.WorkspaceID) {
+		t.Fatalf("workspace ID = %q", m.WorkspaceID)
+	}
+	if m.RootCustody != "external" || m.Repositories[0].CheckoutCustody != "external" {
+		t.Fatalf("external root custody was not recorded: %#v", m.Repositories[0])
+	}
+	if m.Workspace != external {
+		t.Fatalf("workspace = %q, want external root %q", m.Workspace, external)
+	}
+	if got, err := branch(external); err != nil || got != m.Name {
+		t.Fatalf("root branch = %q, %v; want %q", got, err, m.Name)
+	}
+	if err := e.Drop(m); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(external); err != nil {
+		t.Fatalf("external root was removed: %v", err)
+	}
+	if _, err := branch(external); err == nil {
+		t.Fatal("VCM-owned external-root branch was not detached")
+	}
+}
+
 func TestSelectInfersChangeFromManagedWorktree(t *testing.T) {
 	e := fixture(t, 1)
 	m, err := e.Create("selection-context")

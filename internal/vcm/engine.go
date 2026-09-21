@@ -124,26 +124,8 @@ func (e *Engine) Select(selector, cwd string) (selected *Manifest, selectionErr 
 	implicit := selector == ""
 	if !implicit {
 		for _, m := range all {
-			if m.Tag == selector {
+			if m.Version == 5 && m.WorkspaceID == selector {
 				return m, nil
-			}
-		}
-		if !filepath.IsAbs(selector) && !strings.ContainsAny(selector, `/\`) && !strings.HasPrefix(selector, ".") {
-			matches := []*Manifest{}
-			for _, m := range all {
-				if m.Slug == selector {
-					matches = append(matches, m)
-				}
-			}
-			if len(matches) == 1 {
-				return matches[0], nil
-			}
-			if len(matches) > 1 {
-				tags := []string{}
-				for _, m := range matches {
-					tags = append(tags, m.Tag)
-				}
-				return nil, failure("selection", "", fmt.Errorf("ambiguous Change %q; select an exact tag: %s", selector, strings.Join(tags, ", ")))
 			}
 		}
 	}
@@ -167,7 +149,10 @@ func (e *Engine) Select(selector, cwd string) (selected *Manifest, selectionErr 
 			workspace = resolved
 		}
 		withinWorkspace := abs == workspace || strings.HasPrefix(abs, workspace+string(filepath.Separator))
-		if selector == m.Tag || withinWorkspace {
+		if withinWorkspace {
+			if m.Version < 5 && m.State != StateDropped {
+				return nil, fmt.Errorf("legacy workspace must finish with the previous VCM binary")
+			}
 			if m.Origin != e.Root {
 				return nil, fmt.Errorf("manifest workspace ownership mismatch")
 			}
@@ -175,9 +160,9 @@ func (e *Engine) Select(selector, cwd string) (selected *Manifest, selectionErr 
 		}
 	}
 	if implicit {
-		return nil, fmt.Errorf("Change argument is required outside a managed Change worktree")
+		return nil, fmt.Errorf("workspace ID or path is required outside a managed workspace")
 	}
-	return nil, fmt.Errorf("no managed Change matches %q; specify a Change name, tag, or workspace path", selector)
+	return nil, fmt.Errorf("no managed workspace matches %q; specify an exact workspace ID or workspace path", selector)
 }
 func (e *Engine) Mutate(fn func() error) error {
 	if e.DryRun {
@@ -435,8 +420,8 @@ func (e *Engine) ensureCurrentSelection(m *Manifest) error {
 }
 
 func (e *Engine) CreateSelected(slug, only, except string) (*Manifest, error) {
-	if !slugPattern.MatchString(slug) {
-		return nil, fmt.Errorf("slug must use lowercase kebab-case with digits")
+	if !validBranch(slug) {
+		return nil, fmt.Errorf("workspace name must be a valid Git branch")
 	}
 	selected, err := e.selectedRepositories(only, except)
 	if err != nil {
@@ -447,7 +432,7 @@ func (e *Engine) CreateSelected(slug, only, except string) (*Manifest, error) {
 		return nil, err
 	}
 	for _, m := range all {
-		if m.Slug == slug && m.State == "creating" {
+		if m.Version == 5 && m.Name == slug && m.State == "creating" {
 			if m.Version < 3 {
 				return m, legacyCreationError(m.Tag)
 			}
@@ -459,26 +444,132 @@ func (e *Engine) CreateSelected(slug, only, except string) (*Manifest, error) {
 			}
 			return m, e.resumeCreate(m)
 		}
-		if m.Slug == slug && m.State != "dropped" {
-			return nil, fmt.Errorf("active Change already exists: %s", m.Tag)
+		if m.Version == 5 && m.Name == slug && m.State != "dropped" {
+			return nil, fmt.Errorf("active workspace already exists with name %s", m.Name)
 		}
 	}
-	tag := newTag(slug)
-	path := changeWorkspace(e.Root, tag)
+	workspaceID, err := WorkspaceID()
+	if err != nil {
+		return nil, err
+	}
+	path := changeWorkspace(e.Root, workspaceID)
 	rootURL, err := git(e.Root, "remote", "get-url", "origin")
 	if err != nil {
 		return nil, err
 	}
-	m := &Manifest{Version: 4, Tag: tag, Slug: slug, Workspace: path, Origin: e.Root, Config: e.Config, State: "creating", Hooks: map[string]HookState{}}
-	m.Repositories = append(m.Repositories, RepoState{Repository: Repository{Name: "root", URL: rootURL, Trunk: e.Config.Root.Trunk, Hooks: e.Config.Root.Hooks}, Origin: e.Root, Path: path})
+	m := &Manifest{Version: 5, WorkspaceID: workspaceID, Name: slug, CreatedAt: time.Now().UTC(), RootOrigin: e.Root, RootCustody: "vcm", Tag: slug, Workspace: path, Origin: e.Root, Config: e.Config, State: "creating", Hooks: map[string]HookState{}}
+	m.Repositories = append(m.Repositories, RepoState{Repository: Repository{Name: "root", URL: rootURL, Trunk: e.Config.Root.Trunk, Hooks: e.Config.Root.Hooks}, Origin: e.Root, Path: path, CheckoutCustody: "vcm", BranchCustody: "vcm"})
 	for _, r := range selected {
-		m.Repositories = append(m.Repositories, RepoState{Repository: r, Origin: filepath.Join(e.Root, r.Path), Path: filepath.Join(path, r.Path)})
+		m.Repositories = append(m.Repositories, RepoState{Repository: r, Origin: filepath.Join(e.Root, r.Path), Path: filepath.Join(path, r.Path), CheckoutCustody: "vcm", BranchCustody: "vcm"})
 	}
 	m.Recorded = e.recordConfiguration(m)
 	if err = e.preflightCreate(m); err != nil {
 		return nil, err
 	}
 	if err = e.store.save(m); err != nil {
+		return nil, err
+	}
+	return m, e.resumeCreate(m)
+}
+
+// CreateExisting adopts a root worktree created by an external harness. VCM
+// never owns that directory; it owns only the child worktrees it creates.
+func (e *Engine) CreateExisting(name, rootPath, only, except string) (*Manifest, error) {
+	selected, err := e.selectedRepositories(only, except)
+	if err != nil {
+		return nil, err
+	}
+	rootPath, err = filepath.Abs(rootPath)
+	if err != nil {
+		return nil, err
+	}
+	rootPath, err = filepath.EvalSymlinks(rootPath)
+	if err != nil {
+		return nil, fmt.Errorf("existing root: %w", err)
+	}
+	if rootPath == e.Root {
+		return nil, fmt.Errorf("existing root must be a linked worktree, not the canonical checkout")
+	}
+	if err := clean(rootPath); err != nil {
+		return nil, fmt.Errorf("existing root: %w", err)
+	}
+	if top, err := git(rootPath, "rev-parse", "--show-toplevel"); err != nil || top != rootPath {
+		return nil, fmt.Errorf("existing root must be a registered checkout root")
+	}
+	common, err := commonDir(rootPath)
+	if err != nil {
+		return nil, err
+	}
+	canonicalCommon, err := commonDir(e.Root)
+	if err != nil {
+		return nil, err
+	}
+	if common != canonicalCommon {
+		return nil, fmt.Errorf("existing root must belong to the configured root repository")
+	}
+	initial, err := head(rootPath)
+	if err != nil {
+		return nil, err
+	}
+	baseline, err := localBaseline(&RepoState{Repository: Repository{Name: "root", Trunk: e.Config.Root.Trunk}, Origin: e.Root})
+	if err != nil {
+		return nil, err
+	}
+	if initial != baseline {
+		return nil, fmt.Errorf("existing root must start at configured trunk %s", e.Config.Root.Trunk)
+	}
+	attached, branchErr := branch(rootPath)
+	branchCustody := "vcm"
+	if branchErr == nil {
+		if name != "" && name != attached {
+			return nil, fmt.Errorf("existing root branch %q does not match requested name %q", attached, name)
+		}
+		name = attached
+		branchCustody = "external"
+	} else {
+		if name == "" {
+			name = time.Now().UTC().Format("060102150405") + "-" + initial[:12]
+		}
+		if !validBranch(name) {
+			return nil, fmt.Errorf("workspace name must be a valid Git branch")
+		}
+		if _, err := git(e.Root, "show-ref", "--verify", "refs/heads/"+name); err == nil {
+			return nil, fmt.Errorf("generated workspace name %q collides; retry with vcm create <name> --existing-root %s", name, rootPath)
+		}
+		if _, err := git(rootPath, "checkout", "-b", name, initial); err != nil {
+			return nil, fmt.Errorf("attach existing root branch: %w", err)
+		}
+	}
+	if !validBranch(name) {
+		return nil, fmt.Errorf("workspace name must be a valid Git branch")
+	}
+	all, err := e.All()
+	if err != nil {
+		return nil, err
+	}
+	for _, prior := range all {
+		if prior.Version == 5 && prior.Workspace == rootPath && prior.State != StateDropped {
+			return prior, e.resumeCreate(prior)
+		}
+	}
+	workspaceID, err := WorkspaceID()
+	if err != nil {
+		return nil, err
+	}
+	rootURL, err := git(e.Root, "remote", "get-url", "origin")
+	if err != nil {
+		return nil, err
+	}
+	m := &Manifest{Version: 5, WorkspaceID: workspaceID, Name: name, CreatedAt: time.Now().UTC(), RootOrigin: e.Root, RootCustody: "external", Tag: name, Workspace: rootPath, Origin: e.Root, Config: e.Config, State: StateCreating, Hooks: map[string]HookState{}}
+	m.Repositories = append(m.Repositories, RepoState{Repository: Repository{Name: "root", URL: rootURL, Trunk: e.Config.Root.Trunk, Hooks: e.Config.Root.Hooks}, Origin: e.Root, Path: rootPath, Base: initial, Owned: true, CheckoutCustody: "external", BranchCustody: branchCustody})
+	for _, r := range selected {
+		m.Repositories = append(m.Repositories, RepoState{Repository: r, Origin: filepath.Join(e.Root, r.Path), Path: filepath.Join(rootPath, r.Path), CheckoutCustody: "vcm", BranchCustody: "vcm"})
+	}
+	m.Recorded = e.recordConfiguration(m)
+	if err := e.preflightCreate(m); err != nil {
+		return nil, err
+	}
+	if err := e.store.save(m); err != nil {
 		return nil, err
 	}
 	return m, e.resumeCreate(m)
@@ -496,13 +587,16 @@ func (e *Engine) preflightCreate(m *Manifest) error {
 		if _, err := localBaseline(r); err != nil {
 			return err
 		}
+		if i == 0 && m.RootCustody == "external" {
+			continue
+		}
 		if _, err := os.Lstat(r.Path); !os.IsNotExist(err) {
 			if i == 0 {
 				return fmt.Errorf("Change path collision: %s", r.Path)
 			}
 			return fmt.Errorf("repository %s: existing unowned path %s", r.Repository.Name, r.Path)
 		}
-		if _, err := git(r.Origin, "show-ref", "--verify", "refs/heads/"+m.Tag); err == nil {
+		if _, err := git(r.Origin, "show-ref", "--verify", "refs/heads/"+workspaceName(m)); err == nil {
 			return fmt.Errorf("repository %s: branch collision %s", r.Repository.Name, m.Tag)
 		}
 	}
@@ -511,11 +605,32 @@ func (e *Engine) preflightCreate(m *Manifest) error {
 
 func (e *Engine) owned(m *Manifest, r *RepoState) (errOut error) {
 	defer classify(&errOut, "ownership", r.Repository.Name)
+	if r.CheckoutCustody == "external" && r.Repository.Name == "root" {
+		if _, err := os.Stat(r.Path); err != nil {
+			return fmt.Errorf("external root worktree is unavailable; release the workspace before deleting it")
+		}
+		common, err := commonDir(r.Path)
+		if err != nil {
+			return err
+		}
+		originCommon, err := commonDir(r.Origin)
+		if err != nil {
+			return err
+		}
+		if common != originCommon {
+			return fmt.Errorf("repository root: external worktree ownership mismatch")
+		}
+		b, err := branch(r.Path)
+		if err != nil || b != workspaceName(m) {
+			return fmt.Errorf("repository root: expected workspace branch %s", workspaceName(m))
+		}
+		return nil
+	}
 	expected := m.Workspace
 	if r.Repository.Name != "root" {
 		expected = filepath.Join(m.Workspace, r.Repository.Path)
 	}
-	if r.Path != expected || !isChangeWorkspace(e.Root, m.Tag, m.Workspace) || r.Origin != filepath.Join(e.Root, r.Repository.Path) {
+	if r.Path != expected || !isChangeWorkspace(e.Root, manifestKey(m), m.Workspace) || r.Origin != filepath.Join(e.Root, r.Repository.Path) {
 		return fmt.Errorf("repository %s: ownership paths mismatch", r.Repository.Name)
 	}
 	actual, err := filepath.EvalSymlinks(r.Path)
@@ -538,8 +653,8 @@ func (e *Engine) owned(m *Manifest, r *RepoState) (errOut error) {
 		return fmt.Errorf("repository %s: worktree ownership mismatch", r.Repository.Name)
 	}
 	b, err := branch(r.Path)
-	if err != nil || b != m.Tag {
-		return fmt.Errorf("repository %s: expected owned branch %s", r.Repository.Name, m.Tag)
+	if err != nil || b != workspaceName(m) {
+		return fmt.Errorf("repository %s: expected owned branch %s", r.Repository.Name, workspaceName(m))
 	}
 	return nil
 }
@@ -562,7 +677,7 @@ func (e *Engine) resumeCreate(m *Manifest) error {
 		}
 	}
 	root := &m.Repositories[0]
-	if !root.Owned {
+	if !root.Owned || root.CheckoutCustody == "external" {
 		if err := e.hooksAt(m, root, HookCreateBefore, root.Origin, false); err != nil {
 			return err
 		}
@@ -571,6 +686,23 @@ func (e *Engine) resumeCreate(m *Manifest) error {
 			return err
 		}
 		root.Base = base
+		if root.CheckoutCustody == "external" {
+			if err := clean(root.Path); err != nil {
+				return err
+			}
+			current, err := head(root.Path)
+			if err != nil {
+				return err
+			}
+			if current != base {
+				if !ancestor(root.Origin, current, base) {
+					return fmt.Errorf("external root cannot fast-forward to create-before baseline; recreate the harness worktree from trunk")
+				}
+				if _, err := git(root.Path, "merge", "--ff-only", base); err != nil {
+					return fmt.Errorf("advance external root after create-before: %w", err)
+				}
+			}
+		}
 		if err = e.store.save(m); err != nil {
 			return err
 		}
@@ -720,7 +852,7 @@ func (e *Engine) hooksAt(m *Manifest, r *RepoState, phase, directory string, upd
 		for _, repository := range m.Repositories {
 			selected = append(selected, repository.Repository.Name)
 		}
-		hookEnvironment := append(os.Environ(), "VCM_CHANGE_TAG="+m.Tag, "VCM_CHANGE_SLUG="+m.Slug, "VCM_ROOT="+m.Workspace, "VCM_ROOT_ORIGIN="+m.Origin, "VCM_SELECTED_REPOSITORIES="+strings.Join(selected, ","), "VCM_REPOSITORY_NAME="+r.Repository.Name, "VCM_REPOSITORY_ORIGIN="+r.Origin, "VCM_REPOSITORY_PATH="+r.Path, "VCM_HOOK_PHASE="+phase, "VCM_HOOK_ID="+h.ID)
+		hookEnvironment := append(os.Environ(), "VCM_WORKSPACE_ID="+m.WorkspaceID, "VCM_ROOT="+m.Workspace, "VCM_ROOT_ORIGIN="+m.RootOrigin, "VCM_SELECTED_REPOSITORIES="+strings.Join(selected, ","), "VCM_REPOSITORY_NAME="+r.Repository.Name, "VCM_REPOSITORY_ORIGIN="+r.Origin, "VCM_REPOSITORY_PATH="+r.Path, "VCM_REPOSITORY_BASE="+r.Base, "VCM_HOOK_PHASE="+phase, "VCM_HOOK_ID="+h.ID)
 		if e.SkipHookGitHooks && (phase == HookMergeBefore || phase == HookMergeAfter) {
 			hookEnvironment, err = suppressGitHooks(hookEnvironment)
 			if err != nil {

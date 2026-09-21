@@ -54,8 +54,8 @@ func (e *Engine) legacyMutationGuard() error {
 		if err != nil {
 			return failure("inspection", "", fmt.Errorf("cannot inspect state %s: %w", entry.Name(), err))
 		}
-		if m.Version < 3 && m.State == "creating" {
-			return legacyCreationError(m.Tag)
+		if m.Version < 5 && m.State != StateDropped {
+			return failure("interruption", "", fmt.Errorf("legacy workspace %s must finish with the previous VCM binary", m.Tag))
 		}
 	}
 

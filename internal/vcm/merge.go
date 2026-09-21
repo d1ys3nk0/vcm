@@ -169,8 +169,13 @@ func (e *Engine) Drop(m *Manifest) error {
 			return err
 		}
 	}
-	if root.Owned && !root.Removed {
+	if root.Owned && root.CheckoutCustody != "external" && !root.Removed {
 		if err := e.removeOne("drop", m, root); err != nil {
+			return err
+		}
+	}
+	if root.CheckoutCustody == "external" && !root.Removed {
+		if err := e.releaseExternalRoot(m, root); err != nil {
 			return err
 		}
 	}
@@ -186,13 +191,36 @@ func (e *Engine) Drop(m *Manifest) error {
 func (e *Engine) removeAll(operation string, m *Manifest) error {
 	for i := len(m.Repositories) - 1; i >= 0; i-- {
 		r := &m.Repositories[i]
-		if r.Owned && !r.Removed {
+		if r.Owned && r.CheckoutCustody != "external" && !r.Removed {
 			if err := e.removeOne(operation, m, r); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
+}
+
+func (e *Engine) releaseExternalRoot(m *Manifest, root *RepoState) error {
+	if _, err := os.Stat(root.Path); err != nil {
+		return fmt.Errorf("external root worktree disappeared before release; restore it or use the previous VCM binary to recover")
+	}
+	if err := e.owned(m, root); err != nil {
+		return err
+	}
+	if err := clean(root.Path); err != nil {
+		return err
+	}
+	if root.BranchCustody == "vcm" {
+		if _, err := git(root.Path, "checkout", "--detach"); err != nil {
+			return fmt.Errorf("release external root branch: %w", err)
+		}
+		if _, err := git(root.Origin, "branch", "-D", workspaceName(m)); err != nil {
+			return fmt.Errorf("release external root branch: %w", err)
+		}
+	}
+	root.Removed = true
+	root.Intent = ""
+	return e.store.save(m)
 }
 
 func (e *Engine) removeOne(operation string, m *Manifest, r *RepoState) (errOut error) {
@@ -243,7 +271,7 @@ func (e *Engine) removeOne(operation string, m *Manifest, r *RepoState) (errOut 
 	} else if !os.IsNotExist(err) || r.Intent != "remove" {
 		return fmt.Errorf("repository %s: owned worktree disappeared unexpectedly", r.Repository.Name)
 	}
-	ref := "refs/heads/" + m.Tag
+	ref := "refs/heads/" + workspaceName(m)
 	revision, err := git(r.Origin, "rev-parse", "--verify", ref)
 	if err == nil {
 		expected := r.Source
@@ -634,7 +662,7 @@ func (e *Engine) Merge(m *Manifest, messages ...string) error {
 	if effective == "" {
 		effective = provided
 		if effective == "" {
-			effective = "feat: " + m.Slug
+			effective = "chore(vcm): integrate workspace"
 		}
 		if err := ValidateMergeMessage(effective); err != nil {
 			return err
@@ -760,6 +788,11 @@ func (e *Engine) finalizeMerge(m *Manifest) error {
 	root := &m.Repositories[0]
 	if err := e.removeAll("merge", m); err != nil {
 		return err
+	}
+	if root.CheckoutCustody == "external" && !root.Removed {
+		if err := e.releaseExternalRoot(m, root); err != nil {
+			return err
+		}
 	}
 	for i := 1; i < len(m.Repositories); i++ {
 		if m.Repositories[i].Owned {
