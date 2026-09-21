@@ -52,7 +52,7 @@ func (e *Engine) Diff(m *Manifest, opts DiffOptions) (DiffReport, error) {
 	if m == nil {
 		return report, fmt.Errorf("diff requires a Change")
 	}
-	report.Change = m.Tag
+	report.Change = workspaceSelector(m)
 	selected := map[string]bool{}
 	if opts.Only != "" {
 		for _, name := range strings.Split(opts.Only, ",") {
@@ -75,7 +75,7 @@ func (e *Engine) Diff(m *Manifest, opts DiffOptions) (DiffReport, error) {
 				}
 			}
 			if !found {
-				return report, fmt.Errorf("repository %q is not selected in Change %s", name, m.Tag)
+				return report, fmt.Errorf("repository %q is not selected in workspace %s", name, workspaceSelector(m))
 			}
 			selected[name] = true
 		}

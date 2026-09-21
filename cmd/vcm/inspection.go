@@ -11,6 +11,22 @@ import (
 	"github.com/d1ys3nk0/vcm/internal/vcm"
 )
 
+// workspaceIdentity is the only selector exposed for v5 state.  Names are
+// branch implementation details and legacy tags are read-only compatibility.
+func workspaceIdentity(m *vcm.Manifest) string {
+	if m.Version == 5 {
+		return m.WorkspaceID
+	}
+	return m.Tag
+}
+
+func workspaceBranch(m *vcm.Manifest) string {
+	if m.Version == 5 {
+		return m.Name
+	}
+	return m.Tag
+}
+
 type pathResult struct {
 	Path string `json:"path"`
 }
@@ -101,7 +117,7 @@ func inspectList(e *vcm.Engine, context string, all, verbose bool) (overviewResu
 	}
 	lookup := map[string]*vcm.Manifest{}
 	for _, m := range manifests {
-		lookup[m.Tag] = m
+		lookup[m.WorkspaceID] = m
 	}
 	if absolute, err := filepath.Abs(context); err == nil {
 		context = absolute
@@ -110,7 +126,7 @@ func inspectList(e *vcm.Engine, context string, all, verbose bool) (overviewResu
 		context = resolved
 	}
 	for _, summary := range newListResults(manifests, context) {
-		m := lookup[summary.Tag]
+		m := lookup[summary.WorkspaceID]
 		if !all && m.State == "dropped" {
 			continue
 		}
@@ -146,7 +162,7 @@ func renderInspection(out io.Writer, v inspectionResult, style humanStyle) error
 		fmt.Fprintln(out, "Configuration: "+change)
 	}
 	if v.Lifecycle != nil {
-		fmt.Fprintf(out, "Change: %s (%s)\n", v.Lifecycle.Slug, humanLifecycle(v.Lifecycle.State))
+		fmt.Fprintf(out, "Workspace: %s (%s)\n", v.Lifecycle.WorkspaceID, humanLifecycle(v.Lifecycle.State))
 	} else {
 		fmt.Fprintln(out, "Base workspace (remote comparisons use cached refs)")
 	}
@@ -238,19 +254,19 @@ func renderOverview(out io.Writer, v overviewResult, style humanStyle) error {
 	counts := map[string]int{}
 	for _, c := range v.Changes {
 		for _, change := range c.ConfigurationDrift {
-			fmt.Fprintf(out, "Configuration %s: %s\n", c.Slug, change)
+			fmt.Fprintf(out, "Configuration %s: %s\n", c.WorkspaceID, change)
 		}
-		counts[c.Slug]++
+		counts[c.Name]++
 	}
-	rows := [][]string{tableHeader(style, "", "Change", "Repos", "Dirty", "Base update", "Operation", "Age")}
+	rows := [][]string{tableHeader(style, "", "Workspace", "Repos", "Dirty", "Base update", "Operation", "Age")}
 	for _, c := range v.Changes {
 		marker := ""
 		if c.current {
 			marker = "@"
 		}
-		name := c.Slug
+		name := c.Name
 		if counts[name] > 1 || v.verbose {
-			name = c.Tag
+			name = c.WorkspaceID
 		}
 		dirty := "unknown"
 		if c.Dirty != nil {
@@ -302,7 +318,7 @@ func operationFailure(command string, m *vcm.Manifest, err error) error {
 		result.NextAction = "Inspect the reported remote failure and rerun vcm " + command + "; completed publications are not rolled back."
 	}
 	if m != nil {
-		result.Change = m.Tag
+		result.Change = workspaceIdentity(m)
 		if command == "merge" || command == "cleanup" {
 			result.Finalization = "pending"
 			if m.State == "merge-finalizing" {
@@ -329,10 +345,7 @@ func operationFailure(command string, m *vcm.Manifest, err error) error {
 				result.Progress = append(result.Progress, p)
 			}
 		}
-		selector := m.Tag
-		if command == "create" {
-			selector = m.Slug
-		}
+		selector := workspaceIdentity(m)
 		result.NextAction = "Inspect and repair the reported failure, then rerun: vcm --workspace " + shellQuote(m.Origin) + " " + command + " " + shellQuote(selector)
 		if command == "create" {
 			selected := []string{}

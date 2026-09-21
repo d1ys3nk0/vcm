@@ -3,7 +3,7 @@ package vcm
 import "os"
 
 func (e *Engine) CleanupPlan(m *Manifest) OperationPlan {
-	plan := OperationPlan{Command: "cleanup", DryRun: true, Tag: m.Tag, Workspace: m.Workspace, DeletesIgnoredContent: true}
+	plan := OperationPlan{Command: "cleanup", DryRun: true, Tag: workspaceSelector(m), Workspace: m.Workspace, DeletesIgnoredContent: true}
 	if err := e.ensureCurrentSelection(m); err != nil {
 		plan.Blockers = append(plan.Blockers, err.Error())
 	}

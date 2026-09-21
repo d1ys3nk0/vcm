@@ -25,11 +25,11 @@ func renderHumanForTest(t *testing.T, result any) string {
 
 func TestListHumanOutputSortsAndMarksCurrentChange(t *testing.T) {
 	parent := t.TempDir()
-	olderWorkspace := filepath.Join(parent, "workspace.260901100000-older")
-	newerWorkspace := filepath.Join(parent, "workspace.260902100000-newer")
+	olderWorkspace := filepath.Join(parent, "workspace.ws-11111111111111111111111111111111")
+	newerWorkspace := filepath.Join(parent, "workspace.ws-22222222222222222222222222222222")
 	manifests := []*vcm.Manifest{
-		{Tag: "260901100000-older", Slug: "older", Workspace: olderWorkspace, State: "ready", Repositories: []vcm.RepoState{{Merged: false}, {Merged: true}}},
-		{Tag: "260902100000-newer", Slug: "newer", Workspace: newerWorkspace, State: "dropping", Repositories: []vcm.RepoState{{Removed: true}, {Removed: false}}},
+		{Version: 5, WorkspaceID: "ws-11111111111111111111111111111111", Name: "older", CreatedAt: time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC), Workspace: olderWorkspace, State: "ready", Repositories: []vcm.RepoState{{Merged: false}, {Merged: true}}},
+		{Version: 5, WorkspaceID: "ws-22222222222222222222222222222222", Name: "newer", CreatedAt: time.Date(2026, 9, 2, 10, 0, 0, 0, time.UTC), Workspace: newerWorkspace, State: "dropping", Repositories: []vcm.RepoState{{Removed: true}, {Removed: false}}},
 	}
 
 	summary := newListResults(manifests, filepath.Join(newerWorkspace, "repos", "api"))
@@ -38,10 +38,10 @@ func TestListHumanOutputSortsAndMarksCurrentChange(t *testing.T) {
 		entries = append(entries, overviewEntry{listResult: item, BaseUpdate: "unknown", Operation: humanLifecycle(item.State)})
 	}
 	output := renderHumanForTest(t, overviewResult{Changes: entries, verbose: true})
-	if strings.Index(output, "260902100000-newer") > strings.Index(output, "260901100000-older") {
+	if strings.Index(output, "newer") > strings.Index(output, "older") {
 		t.Fatalf("Changes are not newest first:\n%s", output)
 	}
-	for _, expected := range []string{"Change", "Operation", "Repos", "Age", "@", "unknown"} {
+	for _, expected := range []string{"Workspace", "Operation", "Repos", "Age", "@", "unknown"} {
 		if !strings.Contains(output, expected) {
 			t.Errorf("list output is missing %q:\n%s", expected, output)
 		}
@@ -74,7 +74,7 @@ func TestStatusUsesFullJSONHashesAndAbbreviatedHumanHashes(t *testing.T) {
 	const head = "1111111111111111111111111111111111111111"
 	const target = "2222222222222222222222222222222222222222"
 	manifest := &vcm.Manifest{
-		Tag: "260902100000-readable", Slug: "readable", Workspace: "/tmp/readable", State: "ready", Backups: []string{"/tmp/recovery.tar.gz"},
+		Version: 5, WorkspaceID: "ws-33333333333333333333333333333333", Name: "readable", CreatedAt: time.Date(2026, 9, 2, 10, 0, 0, 0, time.UTC), RootCustody: "vcm", Workspace: "/tmp/readable", State: "ready", Backups: []string{"/tmp/recovery.tar.gz"},
 		Hooks: map[string]vcm.HookState{"root/merge-before/check": {Status: "failed", Error: "hook detail"}},
 	}
 	report := vcm.StatusReport{
@@ -110,7 +110,7 @@ func TestStatusUsesFullJSONHashesAndAbbreviatedHumanHashes(t *testing.T) {
 
 func TestLifecycleResultsExposeCommandContractsWithoutManifestInternals(t *testing.T) {
 	manifest := &vcm.Manifest{
-		Tag: "260902100000-contract", Slug: "contract", Workspace: "/tmp/change", Origin: "/tmp/origin", State: "ready",
+		Version: 5, WorkspaceID: "ws-44444444444444444444444444444444", Name: "contract", RootCustody: "vcm", CreatedAt: time.Date(2026, 9, 2, 10, 0, 0, 0, time.UTC), Workspace: "/tmp/change", Origin: "/tmp/origin", State: "ready",
 		Repositories: []vcm.RepoState{{
 			Repository: vcm.Repository{Name: "root"}, Path: "/tmp/change", Base: strings.Repeat("a", 40), Source: strings.Repeat("b", 40), Target: strings.Repeat("c", 40), Merged: true, Removed: true,
 		}},
@@ -118,7 +118,7 @@ func TestLifecycleResultsExposeCommandContractsWithoutManifestInternals(t *testi
 	}
 
 	created := newCreateResult(manifest)
-	if created.Tag != manifest.Tag || len(created.Repositories) != 1 || created.Repositories[0].Base != manifest.Repositories[0].Base {
+	if created.WorkspaceID != manifest.WorkspaceID || len(created.Repositories) != 1 || created.Repositories[0].Base != manifest.Repositories[0].Base {
 		t.Fatalf("invalid create result: %+v", created)
 	}
 	merged := newMergeResult(manifest)
@@ -143,7 +143,7 @@ func TestLifecycleResultsExposeCommandContractsWithoutManifestInternals(t *testi
 			if err := json.Unmarshal(encoded.Bytes(), &payload); err != nil {
 				t.Fatal(err)
 			}
-			if len(payload["repositories"]) == 0 || len(payload["tag"]) == 0 || len(payload["state"]) == 0 {
+			if len(payload["repositories"]) == 0 || len(payload["workspace_id"]) == 0 || len(payload["state"]) == 0 {
 				t.Fatalf("%s result omitted lifecycle contract fields: %s", name, encoded.String())
 			}
 		})
@@ -195,7 +195,7 @@ func TestInspectionPresentationContract(t *testing.T) {
 	if err := json.Unmarshal(encoded.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload["workspace"] != report.Workspace || payload["context"] != "change" || payload["change"] != report.Change {
+	if payload["workspace"] != report.Workspace || payload["context"] != "change" || payload["workspace_id"] != report.Change {
 		t.Fatalf("unexpected tree JSON: %s", encoded.String())
 	}
 	repositories := payload["repositories"].([]any)
@@ -230,13 +230,13 @@ func TestDryRunHumanOutputShowsForceOnlyWhenApplicable(t *testing.T) {
 }
 
 func TestRefreshPresentationExposesGenericLifecycleContract(t *testing.T) {
-	m := &vcm.Manifest{Tag: "260910120000-refresh", State: "ready", Repositories: []vcm.RepoState{{Repository: vcm.Repository{Name: "root"}, Base: strings.Repeat("a", 40), Source: strings.Repeat("b", 40)}}}
+	m := &vcm.Manifest{Version: 5, WorkspaceID: "ws-55555555555555555555555555555555", Name: "refresh", State: "ready", Repositories: []vcm.RepoState{{Repository: vcm.Repository{Name: "root"}, Base: strings.Repeat("a", 40), Source: strings.Repeat("b", 40)}}}
 	result := newRefreshResult(m)
-	if result.Tag != m.Tag || result.State != m.State || len(result.Repositories) != len(m.Repositories) {
+	if result.WorkspaceID != m.WorkspaceID || result.State != m.State || len(result.Repositories) != len(m.Repositories) {
 		t.Fatalf("invalid refresh result: %+v", result)
 	}
 	human := renderHumanForTest(t, result)
-	if want := "Refreshed Change 260910120000-refresh (1 repositories).\n"; human != want {
+	if want := "Refreshed workspace ws-55555555555555555555555555555555 (1 repositories).\n"; human != want {
 		t.Fatalf("unexpected refresh output: %q, want %q", human, want)
 	}
 	var encoded bytes.Buffer
@@ -247,7 +247,7 @@ func TestRefreshPresentationExposesGenericLifecycleContract(t *testing.T) {
 	if err := json.Unmarshal(encoded.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
-	for _, field := range []string{"tag", "state", "repositories"} {
+	for _, field := range []string{"workspace_id", "state", "repositories"} {
 		if len(payload[field]) == 0 {
 			t.Errorf("refresh JSON omitted %q: %s", field, encoded.String())
 		}

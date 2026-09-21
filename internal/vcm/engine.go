@@ -457,7 +457,7 @@ func (e *Engine) CreateSelected(slug, only, except string) (*Manifest, error) {
 	if err != nil {
 		return nil, err
 	}
-	m := &Manifest{Version: 5, WorkspaceID: workspaceID, Name: slug, CreatedAt: time.Now().UTC(), RootOrigin: e.Root, RootCustody: "vcm", Tag: slug, Workspace: path, Origin: e.Root, Config: e.Config, State: "creating", Hooks: map[string]HookState{}}
+	m := &Manifest{Version: 5, WorkspaceID: workspaceID, Name: slug, CreatedAt: time.Now().UTC(), RootOrigin: e.Root, RootCustody: "vcm", Workspace: path, Origin: e.Root, Config: e.Config, State: "creating", Hooks: map[string]HookState{}}
 	m.Repositories = append(m.Repositories, RepoState{Repository: Repository{Name: "root", URL: rootURL, Trunk: e.Config.Root.Trunk, Hooks: e.Config.Root.Hooks}, Origin: e.Root, Path: path, CheckoutCustody: "vcm", BranchCustody: "vcm"})
 	for _, r := range selected {
 		m.Repositories = append(m.Repositories, RepoState{Repository: r, Origin: filepath.Join(e.Root, r.Path), Path: filepath.Join(path, r.Path), CheckoutCustody: "vcm", BranchCustody: "vcm"})
@@ -560,7 +560,7 @@ func (e *Engine) CreateExisting(name, rootPath, only, except string) (*Manifest,
 	if err != nil {
 		return nil, err
 	}
-	m := &Manifest{Version: 5, WorkspaceID: workspaceID, Name: name, CreatedAt: time.Now().UTC(), RootOrigin: e.Root, RootCustody: "external", Tag: name, Workspace: rootPath, Origin: e.Root, Config: e.Config, State: StateCreating, Hooks: map[string]HookState{}}
+	m := &Manifest{Version: 5, WorkspaceID: workspaceID, Name: name, CreatedAt: time.Now().UTC(), RootOrigin: e.Root, RootCustody: "external", Workspace: rootPath, Origin: e.Root, Config: e.Config, State: StateCreating, Hooks: map[string]HookState{}}
 	m.Repositories = append(m.Repositories, RepoState{Repository: Repository{Name: "root", URL: rootURL, Trunk: e.Config.Root.Trunk, Hooks: e.Config.Root.Hooks}, Origin: e.Root, Path: rootPath, Base: initial, Owned: true, CheckoutCustody: "external", BranchCustody: branchCustody})
 	for _, r := range selected {
 		m.Repositories = append(m.Repositories, RepoState{Repository: r, Origin: filepath.Join(e.Root, r.Path), Path: filepath.Join(rootPath, r.Path), CheckoutCustody: "vcm", BranchCustody: "vcm"})
@@ -597,7 +597,7 @@ func (e *Engine) preflightCreate(m *Manifest) error {
 			return fmt.Errorf("repository %s: existing unowned path %s", r.Repository.Name, r.Path)
 		}
 		if _, err := git(r.Origin, "show-ref", "--verify", "refs/heads/"+workspaceName(m)); err == nil {
-			return fmt.Errorf("repository %s: branch collision %s", r.Repository.Name, m.Tag)
+			return fmt.Errorf("repository %s: branch collision %s", r.Repository.Name, workspaceName(m))
 		}
 	}
 	return nil
@@ -746,14 +746,14 @@ func (e *Engine) resumeCreate(m *Manifest) error {
 				if _, err := os.Lstat(r.Path); !os.IsNotExist(err) {
 					return fmt.Errorf("repository %s: existing unowned path %s", r.Repository.Name, r.Path)
 				}
-				if _, err := git(r.Origin, "show-ref", "--verify", "refs/heads/"+m.Tag); err == nil {
-					return fmt.Errorf("repository %s: branch collision %s", r.Repository.Name, m.Tag)
+				if _, err := git(r.Origin, "show-ref", "--verify", "refs/heads/"+workspaceName(m)); err == nil {
+					return fmt.Errorf("repository %s: branch collision %s", r.Repository.Name, workspaceName(m))
 				}
 				r.Intent = "create"
 				if err := e.store.save(m); err != nil {
 					return err
 				}
-				if _, err := git(r.Origin, "worktree", "add", "-b", m.Tag, r.Path, r.Base); err != nil {
+				if _, err := git(r.Origin, "worktree", "add", "-b", workspaceName(m), r.Path, r.Base); err != nil {
 					return err
 				}
 				r.Owned = true
@@ -846,7 +846,7 @@ func (e *Engine) hooksAt(m *Manifest, r *RepoState, phase, directory string, upd
 			continue
 		}
 		if old.Status == "running" {
-			return failure("interruption", r.Repository.Name, fmt.Errorf("hook %s interrupted; inspect its external effects, then authorize retry with vcm recover %s --retry-hook %s --acknowledge-effects", key, m.Tag, key))
+			return failure("interruption", r.Repository.Name, fmt.Errorf("hook %s interrupted; inspect its external effects, then authorize retry with vcm recover %s --retry-hook %s --acknowledge-effects", key, workspaceSelector(m), key))
 		}
 		selected := make([]string, 0, len(m.Repositories))
 		for _, repository := range m.Repositories {

@@ -52,7 +52,7 @@ func (e *Engine) Export(m *Manifest) (*Snapshot, error) {
 	if err := e.ensureCurrentSelection(m); err != nil {
 		return nil, err
 	}
-	s := &Snapshot{Version: 1, Tag: m.Tag, Repositories: []SnapshotRepository{}}
+	s := &Snapshot{Version: 1, Tag: workspaceName(m), Repositories: []SnapshotRepository{}}
 	for i := range m.Repositories {
 		r := &m.Repositories[i]
 		p := changePublication{state: r}
@@ -65,7 +65,7 @@ func (e *Engine) Export(m *Manifest) (*Snapshot, error) {
 		}
 		row := SnapshotRepository{Name: r.Repository.Name, Path: path, URL: portableURL(r.Repository.URL), Trunk: r.Repository.Trunk, Base: r.Base, Source: p.sha}
 		if m.Published[r.Repository.Name] == p.sha {
-			row.PublicationRef = "refs/heads/" + m.Tag
+			row.PublicationRef = "refs/heads/" + workspaceName(m)
 		}
 		if row.URL == "" {
 			return nil, fmt.Errorf("repository %s: local transport URL cannot be exported; configure a portable repository origin", row.Name)
@@ -191,7 +191,7 @@ func (e *Engine) restoreCollision(m *Manifest) error {
 		if _, err := os.Lstat(r.Path); !os.IsNotExist(err) {
 			return fmt.Errorf("repository %s: restore path collision %s", r.Repository.Name, r.Path)
 		}
-		if _, err := git(r.Origin, "show-ref", "--verify", "refs/heads/"+m.Tag); err == nil {
+		if _, err := git(r.Origin, "show-ref", "--verify", "refs/heads/"+workspaceName(m)); err == nil {
 			return fmt.Errorf("repository %s: restore branch collision", r.Repository.Name)
 		}
 	}
@@ -255,7 +255,7 @@ func (e *Engine) Restore(s *Snapshot, name string, fetch bool) (*Manifest, error
 					return m, err
 				}
 				// Disable Git post-checkout hooks as well as VCM lifecycle hooks.
-				if _, err = git(r.Origin, "-c", "core.hooksPath=/dev/null", "worktree", "add", "-b", m.Tag, r.Path, r.Source); err != nil {
+				if _, err = git(r.Origin, "-c", "core.hooksPath=/dev/null", "worktree", "add", "-b", workspaceName(m), r.Path, r.Source); err != nil {
 					return m, err
 				}
 				r.Owned = true
@@ -284,7 +284,7 @@ func (e *Engine) RestorePlan(s *Snapshot, name string, fetch bool) OperationPlan
 	if err = e.ensureCurrentSelection(m); err != nil {
 		p.Blockers = append(p.Blockers, err.Error())
 	}
-	p.Tag = m.Tag
+	p.Tag = workspaceName(m)
 	p.Workspace = m.Workspace
 	if fetch {
 		p.Unverified = append(p.Unverified, "remote availability and missing snapshot objects")

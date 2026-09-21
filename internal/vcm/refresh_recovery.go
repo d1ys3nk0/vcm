@@ -64,7 +64,7 @@ func (e *Engine) finalizeRefreshRecovery(m *Manifest, r *RepoState, recovery ref
 	case refreshRecoveryRecordedMergeCommit, refreshRecoveryCommittedResolution:
 		// The branch already names the completed result.
 	case refreshRecoveryPreparedIndex:
-		if _, err := git(r.Path, "update-ref", "refs/heads/"+m.Tag, r.MergeCommit, r.Source); err != nil {
+		if _, err := git(r.Path, "update-ref", "refs/heads/"+workspaceName(m), r.MergeCommit, r.Source); err != nil {
 			return err
 		}
 		recovery.source = r.MergeCommit

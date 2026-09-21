@@ -146,7 +146,7 @@ func (e *Engine) enrichPlan(plan OperationPlan, m *Manifest) OperationPlan {
 				}
 				actual, err := head(r.Origin)
 				if err == nil && actual != r.Base {
-					plan.Blockers = append(plan.Blockers, fmt.Sprintf("repository %s: local trunk advanced; run vcm refresh %s", r.Repository.Name, m.Tag))
+					plan.Blockers = append(plan.Blockers, fmt.Sprintf("repository %s: local trunk advanced; run vcm refresh %s", r.Repository.Name, workspaceSelector(m)))
 				}
 			}
 		}
@@ -194,7 +194,7 @@ func (e *Engine) enrichPlan(plan OperationPlan, m *Manifest) OperationPlan {
 			if r.Owned {
 				checkpoint = "complete"
 			}
-			add(r, "create", r.Path, "create branch "+m.Tag+" and worktree from local trunk", checkpoint)
+			add(r, "create", r.Path, "create branch "+workspaceName(m)+" and worktree from local trunk", checkpoint)
 			if i > 0 {
 				hooks(r, HookCreateAfter, r.Path)
 			}

@@ -1,6 +1,6 @@
 # Vibe Change Manager
 
-VCM manages a Git workspace root and its child repositories as one Change. It bootstraps repositories, synchronizes trunks, creates isolated worktrees, runs project hooks, squash-merges locally, publishes trunks or Change branches, shares portable snapshots, and records recovery state. Project policy belongs in configured hooks. Git is required; configured hooks additionally require their selected runner.
+VCM manages a Git workspace root and its child repositories as one managed workspace. It bootstraps repositories, synchronizes trunks, creates isolated worktrees, runs project hooks, squash-merges locally, publishes trunks or workspace branches, shares portable snapshots, and records recovery state. Project policy belongs in configured hooks. Git is required; configured hooks additionally require their selected runner.
 
 ## Install
 
@@ -29,6 +29,10 @@ vcm refresh
 vcm merge --message "feat: improve search"
 vcm push
 ```
+
+## Harness integration
+
+Run `vcm integrate codex`, `vcm integrate claude`, or `vcm integrate opencode` in a canonical workspace to install a project-local adapter. The harness continues to create and delete its root worktree; the adapter adopts a newly created linked root with `vcm create --existing-root <path>`, creates configured child worktrees, and runs normal lifecycle hooks. A detached harness root receives a UTC `YYMMDDHHMMSS-<12-char-commit>` branch; an attached root keeps its existing branch. Use `--dry-run` to preview generated files and `--remove` to remove only an unmodified VCM-managed adapter. Codex project hooks must also be trusted through `/hooks`.
 
 Creation uses clean local trunks and does not contact remotes. Run `pull` explicitly when fresh remote work is needed. Merge integrates locally; publication is a separate operation. Creation preflights every selected repository before creating resources, records local baselines, and includes commits produced by `create-before` hooks. Every canonical checkout must remain on its configured trunk.
 
@@ -100,7 +104,7 @@ Root and child repositories need configured origins. Child dependencies determin
 
 Use `vcm <command> --help` for the command's own options. Flags can precede or follow arguments; `--` ends flag parsing. Global options are `--workspace PATH`, `--json`, `--color auto|always|never`, and `--help`.
 
-Change selectors accept unique names, exact timestamped tags, and paths. An exact tag wins; ambiguous names list candidates and require a tag. Explicit relative paths resolve from `--workspace` or the current directory. Omitted selectors use that same context, including nested child directories. `status` also works from base; operations that require a Change need a selector there. Historical tags remain usable after removal for inspection and finalization; navigation requires an owned checkout that still exists.
+Workspace selectors accept an exact opaque Workspace ID (`ws-…`) or a path. Workspace names are Git branch names only and are never selectors. Explicit relative paths resolve from `--workspace` or the current directory. Omitted selectors use that same context, including nested child directories. `status` also works from base; operations that require a managed workspace need a selector there. Historical Workspace IDs remain usable after removal for inspection and finalization; navigation requires an owned checkout that still exists.
 
 ## Inspection and previews
 

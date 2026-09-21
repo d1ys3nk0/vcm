@@ -195,7 +195,7 @@ func (e *Engine) TreeManifest(manifest *Manifest) (TreeReport, error) {
 	if inChange {
 		report.Workspace = manifest.Workspace
 		report.Context = "change"
-		report.Change = manifest.Tag
+		report.Change = workspaceSelector(manifest)
 	}
 
 	selected := map[string]RepoState{}

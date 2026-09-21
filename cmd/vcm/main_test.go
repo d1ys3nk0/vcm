@@ -220,7 +220,7 @@ func TestCommandHelpOutsideWorkspace(t *testing.T) {
 
 func TestMergeOverrideFlagsValidationAndDryRun(t *testing.T) {
 	root, manifest := cliManagedChange(t)
-	result, err := runJSON[dryRunResult](t, "merge", manifest.Tag, "--ignore-hook-failures", "--skip-hooks", "merge-after,merge-before", "--skip-hook-git-hooks", "--dry-run", "--json", "--workspace", root)
+	result, err := runJSON[dryRunResult](t, "merge", manifest.WorkspaceID, "--ignore-hook-failures", "--skip-hooks", "merge-after,merge-before", "--skip-hook-git-hooks", "--dry-run", "--json", "--workspace", root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,7 +230,7 @@ func TestMergeOverrideFlagsValidationAndDryRun(t *testing.T) {
 	if !result.DeletesIgnoredContent {
 		t.Fatalf("merge dry-run omitted ignored-content deletion: %+v", result)
 	}
-	human, err := runOutput(t, "merge", manifest.Tag, "--ignore-hook-failures", "--skip-hooks=merge-before", "--skip-hook-git-hooks", "--dry-run", "--workspace", root)
+	human, err := runOutput(t, "merge", manifest.WorkspaceID, "--ignore-hook-failures", "--skip-hooks=merge-before", "--skip-hook-git-hooks", "--dry-run", "--workspace", root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +240,7 @@ func TestMergeOverrideFlagsValidationAndDryRun(t *testing.T) {
 		}
 	}
 	for _, command := range []string{"drop"} {
-		other, dryRunErr := runJSON[dryRunResult](t, command, manifest.Tag, "--dry-run", "--json", "--workspace", root)
+		other, dryRunErr := runJSON[dryRunResult](t, command, manifest.WorkspaceID, "--dry-run", "--json", "--workspace", root)
 		if dryRunErr != nil {
 			t.Fatal(dryRunErr)
 		}
@@ -249,14 +249,14 @@ func TestMergeOverrideFlagsValidationAndDryRun(t *testing.T) {
 		}
 	}
 	for name, args := range map[string][]string{
-		"blank":           {"merge", manifest.Tag, "--skip-hooks=", "--workspace", root},
-		"trailing":        {"merge", manifest.Tag, "--skip-hooks", "merge-before,", "--workspace", root},
-		"whitespace":      {"merge", manifest.Tag, "--skip-hooks", "merge-before, merge-after", "--workspace", root},
-		"duplicate":       {"merge", manifest.Tag, "--skip-hooks", "merge-before,merge-before", "--workspace", root},
-		"unsupported":     {"merge", manifest.Tag, "--skip-hooks", "create-after", "--workspace", root},
-		"placement":       {"status", manifest.Tag, "--skip-hooks", "merge-before", "--workspace", root},
-		"git-placement":   {"status", manifest.Tag, "--skip-hook-git-hooks", "--workspace", root},
-		"force-placement": {"status", manifest.Tag, "-f", "--workspace", root},
+		"blank":           {"merge", manifest.WorkspaceID, "--skip-hooks=", "--workspace", root},
+		"trailing":        {"merge", manifest.WorkspaceID, "--skip-hooks", "merge-before,", "--workspace", root},
+		"whitespace":      {"merge", manifest.WorkspaceID, "--skip-hooks", "merge-before, merge-after", "--workspace", root},
+		"duplicate":       {"merge", manifest.WorkspaceID, "--skip-hooks", "merge-before,merge-before", "--workspace", root},
+		"unsupported":     {"merge", manifest.WorkspaceID, "--skip-hooks", "create-after", "--workspace", root},
+		"placement":       {"status", manifest.WorkspaceID, "--skip-hooks", "merge-before", "--workspace", root},
+		"git-placement":   {"status", manifest.WorkspaceID, "--skip-hook-git-hooks", "--workspace", root},
+		"force-placement": {"status", manifest.WorkspaceID, "-f", "--workspace", root},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := runOutput(t, args...); err == nil {
@@ -268,18 +268,18 @@ func TestMergeOverrideFlagsValidationAndDryRun(t *testing.T) {
 
 func TestCLIUsesDefaultMergeMessage(t *testing.T) {
 	root, manifest := cliManagedChange(t)
-	if _, err := runOutput(t, "merge", manifest.Tag, "--workspace", root); err != nil {
+	if _, err := runOutput(t, "merge", manifest.WorkspaceID, "--workspace", root); err != nil {
 		t.Fatal(err)
 	}
 	engine, err := vcm.Open(root, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
-	stored, err := engine.Select(manifest.Tag, root)
+	stored, err := engine.Select(manifest.WorkspaceID, root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stored.MergeMessage != "feat: context-selection" {
+	if stored.MergeMessage != "chore(vcm): integrate workspace" {
 		t.Fatalf("default message = %q", stored.MergeMessage)
 	}
 }
@@ -353,14 +353,14 @@ func TestTreeWorkspaceOverrideSelectsRequestedContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if base.Context != "base" || base.Change != "" || base.Workspace != root {
+	if base.Context != "base" || base.WorkspaceID != "" || base.Workspace != root {
 		t.Fatalf("explicit base workspace selected wrong context: %+v", base)
 	}
 	change, err := runJSON[treeResult](t, "status", "--json", "--workspace", manifest.Workspace)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if change.Context != "change" || change.Change != manifest.Tag || change.Workspace != manifest.Workspace {
+	if change.Context != "change" || change.WorkspaceID != manifest.WorkspaceID || change.Workspace != manifest.Workspace {
 		t.Fatalf("explicit Change workspace selected wrong context: %+v", change)
 	}
 }
@@ -509,8 +509,7 @@ func TestChangeCommandsUseContextAwareSelection(t *testing.T) {
 		{name: "drop", args: []string{"drop", "--dry-run", "--json"}},
 	}
 	type selectedResult struct {
-		Tag    string `json:"tag"`
-		Change string `json:"change"`
+		WorkspaceID string `json:"workspace_id"`
 	}
 	assertSelected := func(t *testing.T, command []string, selector string, workspaceOverride bool) {
 		t.Helper()
@@ -525,11 +524,8 @@ func TestChangeCommandsUseContextAwareSelection(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if result.Tag == "" {
-			result.Tag = result.Change
-		}
-		if result.Tag != manifest.Tag {
-			t.Fatalf("selected %q, want %q", result.Tag, manifest.Tag)
+		if result.WorkspaceID != manifest.WorkspaceID {
+			t.Fatalf("selected %q, want %q", result.WorkspaceID, manifest.WorkspaceID)
 		}
 	}
 
@@ -556,18 +552,18 @@ func TestChangeCommandsUseContextAwareSelection(t *testing.T) {
 				}
 				return
 			}
-			if _, err := runOutput(t, args...); err == nil || err.Error() != "Change argument is required outside a managed Change worktree" {
+			if _, err := runOutput(t, args...); err == nil || err.Error() != "workspace ID or path is required outside a managed workspace" {
 				t.Fatalf("unexpected omitted-selection error: %v", err)
 			}
 		})
-		for _, selector := range []string{manifest.Slug, manifest.Tag, manifest.Workspace} {
+		for _, selector := range []string{manifest.WorkspaceID, manifest.Workspace} {
 			t.Run(command.name+"/explicit/"+filepath.Base(selector), func(t *testing.T) {
 				assertSelected(t, command.args, selector, true)
 			})
 		}
 		t.Run(command.name+"/unknown", func(t *testing.T) {
 			args := append(append([]string{}, command.args...), "missing-change", "--workspace", root)
-			if _, err := runOutput(t, args...); err == nil || !strings.Contains(err.Error(), `no managed Change matches "missing-change"`) {
+			if _, err := runOutput(t, args...); err == nil || !strings.Contains(err.Error(), `no managed workspace matches "missing-change"`) {
 				t.Fatalf("unexpected explicit-selection error: %v", err)
 			}
 		})

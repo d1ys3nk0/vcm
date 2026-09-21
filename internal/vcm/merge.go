@@ -49,7 +49,7 @@ func (e *Engine) Drop(m *Manifest) error {
 		return nil
 	}
 	if m.State == "integrated" || m.State == "merge-finalizing" || m.State == "merging" {
-		return fmt.Errorf("Change merge is incomplete; retry merge %s", m.Tag)
+		return fmt.Errorf("workspace merge is incomplete; retry merge %s", workspaceSelector(m))
 	}
 	if m.State == "refreshing" {
 		return fmt.Errorf("Change refresh is incomplete; run vcm refresh from %s", m.Workspace)
@@ -289,7 +289,7 @@ func (e *Engine) removeOne(operation string, m *Manifest, r *RepoState) (errOut 
 	if err := e.store.save(m); err != nil {
 		return err
 	}
-	e.logOperationOutcome(operation, r.Repository.Name, r.Path, "", "removed", LogChanged, " managed worktree and branch %s", m.Tag)
+	e.logOperationOutcome(operation, r.Repository.Name, r.Path, "", "removed", LogChanged, " managed worktree and branch %s", workspaceName(m))
 	return nil
 }
 
@@ -455,7 +455,7 @@ func (e *Engine) Plan(command string, m *Manifest) OperationPlan {
 
 	return e.enrichPlan(OperationPlan{Command: command, DryRun: true, Force: force, IgnoreHookFailures: e.IgnoreHookFailures, DeletesIgnoredContent: command == "merge", SkippedHookPhases: skipped, SkipHookGitHooks: e.SkipHookGitHooks, Tag: func() string {
 		if m != nil {
-			return m.Tag
+			return workspaceSelector(m)
 		}
 		return ""
 	}(), Workspace: func() string {
@@ -512,7 +512,7 @@ func (e *Engine) preflight(m *Manifest) (errOut error) {
 			return fmt.Errorf("repository %s: origin must be on trunk %s", r.Repository.Name, r.Repository.Trunk)
 		}
 		if target != r.Base {
-			return fmt.Errorf("repository %s: target advanced from recorded base; run vcm refresh %s", r.Repository.Name, m.Tag)
+			return fmt.Errorf("repository %s: target advanced from recorded base; run vcm refresh %s", r.Repository.Name, workspaceSelector(m))
 		}
 	}
 	return nil
@@ -534,7 +534,7 @@ func (e *Engine) freezeMerge(m *Manifest) error {
 			return err
 		}
 		if target != r.Base {
-			return fmt.Errorf("repository %s: target changed after merge gate; run vcm refresh %s", r.Repository.Name, m.Tag)
+			return fmt.Errorf("repository %s: target changed after merge gate; run vcm refresh %s", r.Repository.Name, workspaceSelector(m))
 		}
 		if r.Source != "" && source != r.Source {
 			return fmt.Errorf("repository %s: source changed after merge gate", r.Repository.Name)
@@ -634,7 +634,7 @@ func (e *Engine) Merge(m *Manifest, messages ...string) error {
 		return fmt.Errorf("merge already started without --keep; retention choice cannot change during retry")
 	}
 	if m.State == "integrated" || m.Keep && m.State == "merge-finalizing" {
-		return fmt.Errorf("Change integrated; run vcm cleanup %s", m.Tag)
+		return fmt.Errorf("workspace integrated; run vcm cleanup %s", workspaceSelector(m))
 	}
 	if m.State == "expanding" || m.State == "restoring" {
 		return fmt.Errorf("Change %s operation is incomplete", m.State)
@@ -646,13 +646,13 @@ func (e *Engine) Merge(m *Manifest, messages ...string) error {
 		return nil
 	}
 	if m.State == "creating" {
-		return fmt.Errorf("Change creation incomplete; retry create %s", m.Slug)
+		return fmt.Errorf("workspace creation incomplete; retry create %s", workspaceSelector(m))
 	}
 	if m.State == "refreshing" {
 		return fmt.Errorf("Change refresh incomplete; run vcm refresh from %s", m.Workspace)
 	}
 	if m.State == "dropping" {
-		return fmt.Errorf("Change is being dropped; retry drop %s", m.Tag)
+		return fmt.Errorf("workspace is being dropped; retry drop %s", workspaceSelector(m))
 	}
 	provided := ""
 	if len(messages) > 0 {

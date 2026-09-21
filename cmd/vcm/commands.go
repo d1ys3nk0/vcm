@@ -21,7 +21,8 @@ var commands = []commandDefinition{
 	{"export", "[change]", "Export a portable JSON Change snapshot.", nil, 0, 1},
 	{"restore", "<snapshot-file>", "Restore exact snapshot revisions without hooks.", []string{"name", "fetch", "dry-run"}, 1, 1},
 	{"cleanup", "[change]", "Remove retained integrated worktrees and finalize.", []string{"dry-run", "no-cd"}, 0, 1},
-	{"create", "<slug>", "Create a Change from clean local trunks.", []string{"only", "except", "dry-run", "no-cd"}, 1, 1},
+	{"create", "[name]", "Create a managed workspace from local trunks or an existing root.", []string{"existing-root", "only", "except", "dry-run", "no-cd"}, 0, 1},
+	{"integrate", "<codex|claude|opencode>", "Install or remove project-local harness integration.", []string{"dry-run", "remove"}, 1, 1},
 	{"switch", "[change]", "Enter an existing Change or the base workspace.", []string{"base", "no-cd"}, 0, 1},
 	{"status", "[change]", "Inspect working trees, divergence, and operation progress.", []string{"verbose"}, 0, 1},
 	{"list", "", "List active Changes and their working state.", []string{"all", "verbose"}, 0, 0},
@@ -39,15 +40,16 @@ var commands = []commandDefinition{
 	{"path", "[change]", "Print the absolute checkout path.", []string{"base"}, 0, 1},
 	{"shell", "init <bash|zsh>", "Print shell integration and completions.", nil, 2, 2},
 	{"version", "", "Print version and source commit.", nil, 0, 0},
+	{"_integrate-adapter", "<codex|claude|opencode>", "", nil, 1, 1},
 	{"_complete", "[kind]", "", nil, 0, 1},
 }
 var optionDescriptions = map[string]string{
 	"name": "SLUG  Name for restored Change", "fetch": "Fetch missing snapshot objects from trusted origins", "stat": "Show tracked diff statistics (default)", "committed": "Compare baseline to HEAD", "patch": "Include tracked patches", "keep": "Retain integrated worktrees for later cleanup", "adopt-config": "Adopt inspected execution configuration without running hooks",
-	"workspace": "PATH  Effective workspace context (default: current directory)", "json": "Emit structured JSON", "color": "MODE  auto, always, or never", "help": "Show command help",
+	"workspace": "PATH  Effective workspace context (default: current directory)", "existing-root": "PATH  Adopt a harness-created linked root worktree", "remove": "Remove the exact VCM-managed integration", "json": "Emit structured JSON", "color": "MODE  auto, always, or never", "help": "Show command help",
 	"dry-run": "Preview ordered effects and local blockers without mutation", "only": "NAMES  Select exact comma-separated children", "except": "NAMES  Exclude comma-separated children", "message": "SUBJECT  Squash commit subject", "ignore-hook-failures": "Continue after clean lifecycle hook command failures", "skip-hooks": "PHASES  Skip merge-before and/or merge-after", "skip-hook-git-hooks": "Disable Git hooks only inside merge lifecycle hooks", "force": "Back up and discard working content", "f": "Alias for --force", "no-cd": "Do not change the invoking shell directory", "verbose": "Show paths, checkpoints, and recovery detail", "all": "Include completed Changes", "config-only": "Validate configuration without inspecting child checkouts", "base": "Select the canonical workspace", "retry-hook": "KEY  Exact repository/phase/id of an interrupted hook", "acknowledge-effects": "Confirm external hook effects have been inspected", "trunk": "BRANCH  Existing local trunk (default: current branch)",
 }
 
-const helpText = "VCM manages one named Change across multiple Git repositories.\n\nUsage: vcm [global options] <command> [arguments]\n"
+const helpText = "VCM manages one workspace across multiple Git repositories.\n\nUsage: vcm [global options] <command> [arguments]\n"
 
 func commandHelp(command string) string {
 	var b strings.Builder
@@ -88,7 +90,7 @@ func commandHelp(command string) string {
 		fmt.Fprintf(&b, "  %-26s %s\n", prefix+o, optionDescriptions[o])
 	}
 	if command != "" {
-		b.WriteString("\nChange selectors accept unique names, exact tags, or paths. Omitted selectors use\n--workspace, otherwise the current directory. Flags may follow arguments.\n")
+		b.WriteString("\nWorkspace selectors accept an exact workspace ID or path. Omitted selectors use\n--workspace, otherwise the current directory. Flags may follow arguments.\n")
 	}
 	if command == "merge" {
 		b.WriteString("\nExample: vcm merge improve-search --message \"feat: improve search\"\nMerge integrates locally, then cleans up and runs finalization hooks.\n--keep retains integrated worktrees until vcm cleanup; cleanup deletes ignored\ncontent without backups. Repair a failure and rerun the same command to resume.\n")
@@ -97,19 +99,19 @@ func commandHelp(command string) string {
 }
 
 type options struct {
-	workspace, only, except, message, skipHooks, retryHook, trunk, name                                                                                          string
-	color                                                                                                                                                        colorMode
-	stat, committed, patch, keep, adoptConfig, fetch, json, dry, force, skipHookGit, ignoreHookFailures, noCD, verbose, all, configOnly, base, acknowledge, help bool
+	workspace, existingRoot, only, except, message, skipHooks, retryHook, trunk, name                                                                                    string
+	color                                                                                                                                                                colorMode
+	stat, committed, patch, keep, adoptConfig, fetch, json, dry, force, remove, skipHookGit, ignoreHookFailures, noCD, verbose, all, configOnly, base, acknowledge, help bool
 }
 
 func parseArguments(args []string) (options, string, string, error) {
 	o := options{color: colorAuto}
 	fs := flag.NewFlagSet("vcm", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	for name, p := range map[string]*string{"name": &o.name, "workspace": &o.workspace, "only": &o.only, "except": &o.except, "message": &o.message, "skip-hooks": &o.skipHooks, "retry-hook": &o.retryHook, "trunk": &o.trunk} {
+	for name, p := range map[string]*string{"name": &o.name, "workspace": &o.workspace, "existing-root": &o.existingRoot, "only": &o.only, "except": &o.except, "message": &o.message, "skip-hooks": &o.skipHooks, "retry-hook": &o.retryHook, "trunk": &o.trunk} {
 		fs.StringVar(p, name, "", optionDescriptions[name])
 	}
-	for name, p := range map[string]*bool{"stat": &o.stat, "committed": &o.committed, "patch": &o.patch, "keep": &o.keep, "adopt-config": &o.adoptConfig, "fetch": &o.fetch, "json": &o.json, "dry-run": &o.dry, "force": &o.force, "f": &o.force, "skip-hook-git-hooks": &o.skipHookGit, "ignore-hook-failures": &o.ignoreHookFailures, "no-cd": &o.noCD, "verbose": &o.verbose, "all": &o.all, "config-only": &o.configOnly, "base": &o.base, "acknowledge-effects": &o.acknowledge, "help": &o.help, "h": &o.help} {
+	for name, p := range map[string]*bool{"stat": &o.stat, "committed": &o.committed, "patch": &o.patch, "keep": &o.keep, "adopt-config": &o.adoptConfig, "fetch": &o.fetch, "json": &o.json, "dry-run": &o.dry, "force": &o.force, "f": &o.force, "remove": &o.remove, "skip-hook-git-hooks": &o.skipHookGit, "ignore-hook-failures": &o.ignoreHookFailures, "no-cd": &o.noCD, "verbose": &o.verbose, "all": &o.all, "config-only": &o.configOnly, "base": &o.base, "acknowledge-effects": &o.acknowledge, "help": &o.help} {
 		fs.BoolVar(p, name, false, optionDescriptions[name])
 	}
 	fs.Var(&o.color, "color", optionDescriptions["color"])

@@ -92,6 +92,16 @@ func run(args []string) error {
 	engine.Force = force && command != "merge"
 	engine.IgnoreHookFailures = opts.ignoreHookFailures
 	engine.SkipHookGitHooks = skipGitHooks
+	if command == "integrate" {
+		result, integrateErr := integrateHarness(engine.Root, arg, opts.remove, dry)
+		if integrateErr != nil {
+			return integrateErr
+		}
+		return output(result)
+	}
+	if command == "_integrate-adapter" {
+		return runIntegrationAdapter(arg)
+	}
 	if skipHooks != "" {
 		phases, parseErr := parseMergeHookPhases(skipHooks)
 		if parseErr != nil {
@@ -192,11 +202,14 @@ func run(args []string) error {
 				return fmt.Errorf("merge already started with message %q; retries must reuse it", m.MergeMessage)
 			}
 		}
-		if command == "create" && arg == "" {
-			return fmt.Errorf("create requires a slug")
+		if command == "create" && arg == "" && opts.existingRoot == "" {
+			return fmt.Errorf("create requires a workspace name unless --existing-root is supplied")
 		}
 		if dry {
 			if command == "create" {
+				if opts.existingRoot != "" {
+					return fmt.Errorf("--dry-run with --existing-root is not supported")
+				}
 				plan, err := engine.CreatePlanSelected(arg, only, except)
 				if err != nil {
 					return err
@@ -235,7 +248,11 @@ func run(args []string) error {
 			case "push":
 				return engine.Push()
 			case "create":
-				m, err = engine.CreateSelected(arg, only, except)
+				if opts.existingRoot != "" {
+					m, err = engine.CreateExisting(arg, opts.existingRoot, only, except)
+				} else {
+					m, err = engine.CreateSelected(arg, only, except)
+				}
 				return err
 			case "refresh":
 				return engine.Refresh(m)

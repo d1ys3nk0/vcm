@@ -82,7 +82,7 @@ func (e *Engine) Publish(m *Manifest) error {
 	if err != nil {
 		return err
 	}
-	ref := "refs/heads/" + m.Tag
+	ref := "refs/heads/" + workspaceName(m)
 	for i := range repos {
 		p := &repos[i]
 		if err = e.publicationLocal(m, p); err != nil {
@@ -133,7 +133,7 @@ func (e *Engine) Publish(m *Manifest) error {
 	return nil
 }
 func (e *Engine) PublishPlan(m *Manifest) OperationPlan {
-	plan := OperationPlan{Command: "publish", DryRun: true, Tag: m.Tag, Workspace: m.Workspace, Steps: []PlanStep{}, Blockers: []string{}, Unverified: []string{"remote availability and current remote revisions"}}
+	plan := OperationPlan{Command: "publish", DryRun: true, Tag: workspaceSelector(m), Workspace: m.Workspace, Steps: []PlanStep{}, Blockers: []string{}, Unverified: []string{"remote availability and current remote revisions"}}
 	repos, err := e.publicationRepositories(m)
 	if err != nil {
 		plan.Blockers = append(plan.Blockers, err.Error())
@@ -144,7 +144,7 @@ func (e *Engine) PublishPlan(m *Manifest) OperationPlan {
 		if err = e.publicationLocal(m, p); err != nil {
 			plan.Blockers = append(plan.Blockers, err.Error())
 		}
-		plan.Steps = append(plan.Steps, PlanStep{Phase: "publish", Repository: p.state.Repository.Name, Target: "refs/heads/" + m.Tag, Effect: strings.TrimSpace("publish exact revision " + p.sha), Checkpoint: "pending"})
+		plan.Steps = append(plan.Steps, PlanStep{Phase: "publish", Repository: p.state.Repository.Name, Target: "refs/heads/" + workspaceName(m), Effect: strings.TrimSpace("publish exact revision " + p.sha), Checkpoint: "pending"})
 	}
 	return plan
 }

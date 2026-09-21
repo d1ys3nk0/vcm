@@ -45,7 +45,7 @@ type treeRepositoryResult struct {
 type treeResult struct {
 	Workspace    string                 `json:"workspace"`
 	Context      string                 `json:"context"`
-	Change       string                 `json:"change,omitempty"`
+	WorkspaceID  string                 `json:"workspace_id,omitempty"`
 	Repositories []treeRepositoryResult `json:"repositories"`
 }
 
@@ -56,16 +56,18 @@ type createRepositoryResult struct {
 }
 
 type createResult struct {
-	Tag          string                   `json:"tag"`
-	Slug         string                   `json:"slug"`
+	WorkspaceID  string                   `json:"workspace_id"`
+	Name         string                   `json:"name"`
+	RootCustody  string                   `json:"root_custody"`
 	Workspace    string                   `json:"workspace"`
 	State        vcm.Lifecycle            `json:"state"`
 	Repositories []createRepositoryResult `json:"repositories"`
 }
 
 type listResult struct {
-	Tag             string        `json:"tag"`
-	Slug            string        `json:"slug"`
+	WorkspaceID     string        `json:"workspace_id"`
+	Name            string        `json:"name"`
+	RootCustody     string        `json:"root_custody"`
 	Workspace       string        `json:"workspace"`
 	State           vcm.Lifecycle `json:"state"`
 	CreatedAt       time.Time     `json:"created_at"`
@@ -114,8 +116,9 @@ type pendingSyncIntentResult struct {
 }
 
 type statusResult struct {
-	Tag               string                   `json:"tag"`
-	Slug              string                   `json:"slug"`
+	WorkspaceID       string                   `json:"workspace_id"`
+	Name              string                   `json:"name"`
+	RootCustody       string                   `json:"root_custody"`
 	Workspace         string                   `json:"workspace"`
 	State             vcm.Lifecycle            `json:"state"`
 	CreatedAt         time.Time                `json:"created_at"`
@@ -134,7 +137,7 @@ type mergeRepositoryResult struct {
 }
 
 type mergeResult struct {
-	Tag          string                  `json:"tag"`
+	WorkspaceID  string                  `json:"workspace_id"`
 	State        vcm.Lifecycle           `json:"state"`
 	Repositories []mergeRepositoryResult `json:"repositories"`
 	Backups      []string                `json:"backups"`
@@ -146,7 +149,7 @@ type refreshRepositoryResult struct {
 	Source string `json:"source"`
 }
 type refreshResult struct {
-	Tag          string                    `json:"tag"`
+	WorkspaceID  string                    `json:"workspace_id"`
 	State        vcm.Lifecycle             `json:"state"`
 	Repositories []refreshRepositoryResult `json:"repositories"`
 }
@@ -157,7 +160,7 @@ type dropRepositoryResult struct {
 }
 
 type dropResult struct {
-	Tag          string                 `json:"tag"`
+	WorkspaceID  string                 `json:"workspace_id"`
 	State        vcm.Lifecycle          `json:"state"`
 	Repositories []dropRepositoryResult `json:"repositories"`
 	Backups      []string               `json:"backups"`
@@ -179,7 +182,7 @@ type dryRunResult struct {
 	DeletesIgnoredContent bool           `json:"deletes_ignored_content"`
 	SkippedHookPhases     []string       `json:"skipped_hook_phases"`
 	SkipHookGitHooks      bool           `json:"skip_hook_git_hooks"`
-	Tag                   string         `json:"tag,omitempty"`
+	WorkspaceID           string         `json:"workspace_id,omitempty"`
 	Workspace             string         `json:"workspace,omitempty"`
 	Resources             []string       `json:"resources"`
 }
@@ -190,17 +193,12 @@ type errorResult struct {
 	} `json:"error"`
 }
 
-func createdAt(tag string) time.Time {
-	created, _ := time.Parse("060102150405", tag[:12])
-	return created.UTC()
-}
-
 func newCreateResult(m *vcm.Manifest) createResult {
 	repositories := make([]createRepositoryResult, 0, len(m.Repositories))
 	for _, repository := range m.Repositories {
 		repositories = append(repositories, createRepositoryResult{Name: repository.Repository.Name, Path: repository.Path, Base: repository.Base})
 	}
-	return createResult{Tag: m.Tag, Slug: m.Slug, Workspace: m.Workspace, State: m.State, Repositories: repositories}
+	return createResult{WorkspaceID: m.WorkspaceID, Name: m.Name, RootCustody: m.RootCustody, Workspace: m.Workspace, State: m.State, Repositories: repositories}
 }
 
 func newListResults(manifests []*vcm.Manifest, cwd string) []listResult {
@@ -217,13 +215,13 @@ func newListResults(manifests []*vcm.Manifest, cwd string) []listResult {
 		}
 		current := cwd == manifest.Workspace || strings.HasPrefix(cwd, manifest.Workspace+string(filepath.Separator))
 		results = append(results, listResult{
-			Tag: manifest.Tag, Slug: manifest.Slug, Workspace: manifest.Workspace, State: manifest.State,
-			CreatedAt: createdAt(manifest.Tag), RepositoryCount: len(manifest.Repositories), MergedCount: merged, RemovedCount: removed, current: current,
+			WorkspaceID: manifest.WorkspaceID, Name: manifest.Name, RootCustody: manifest.RootCustody, Workspace: manifest.Workspace, State: manifest.State,
+			CreatedAt: manifest.CreatedAt, RepositoryCount: len(manifest.Repositories), MergedCount: merged, RemovedCount: removed, current: current,
 		})
 	}
 	sort.Slice(results, func(i, j int) bool {
 		if results[i].CreatedAt.Equal(results[j].CreatedAt) {
-			return results[i].Tag > results[j].Tag
+			return results[i].WorkspaceID > results[j].WorkspaceID
 		}
 		return results[i].CreatedAt.After(results[j].CreatedAt)
 	})
@@ -288,13 +286,13 @@ func newStatusResult(m *vcm.Manifest, report vcm.StatusReport) statusResult {
 		}, Error: item.Error})
 	}
 	return statusResult{
-		Tag: m.Tag, Slug: m.Slug, Workspace: m.Workspace, State: m.State, CreatedAt: createdAt(m.Tag), Repositories: repositories,
+		WorkspaceID: m.WorkspaceID, Name: m.Name, RootCustody: m.RootCustody, Workspace: m.Workspace, State: m.State, CreatedAt: m.CreatedAt, Repositories: repositories,
 		Hooks: hooks, Backups: append([]string{}, m.Backups...), RecoveryDirectory: report.RecoveryDirectory, PendingSync: pending,
 	}
 }
 
 func newTreeResult(report vcm.TreeReport) treeResult {
-	result := treeResult{Workspace: report.Workspace, Context: report.Context, Change: report.Change}
+	result := treeResult{Workspace: report.Workspace, Context: report.Context, WorkspaceID: report.Change}
 	for _, repository := range report.Repositories {
 		item := treeRepositoryResult{Name: repository.Name, Path: repository.Path, Available: repository.Available, Detail: repository.Detail, TreeState: repository.TreeState}
 		if repository.Available {
@@ -322,7 +320,7 @@ func newMergeResult(m *vcm.Manifest) mergeResult {
 	for _, repository := range m.Repositories {
 		repositories = append(repositories, mergeRepositoryResult{Name: repository.Repository.Name, Merged: repository.Merged, Source: repository.Source, Target: repository.Target})
 	}
-	return mergeResult{Tag: m.Tag, State: m.State, Repositories: repositories, Backups: append([]string{}, m.Backups...)}
+	return mergeResult{WorkspaceID: m.WorkspaceID, State: m.State, Repositories: repositories, Backups: append([]string{}, m.Backups...)}
 }
 
 func newRefreshResult(m *vcm.Manifest) refreshResult {
@@ -330,7 +328,7 @@ func newRefreshResult(m *vcm.Manifest) refreshResult {
 	for _, repository := range m.Repositories {
 		repositories = append(repositories, refreshRepositoryResult{Name: repository.Repository.Name, Base: repository.Base, Source: repository.Source})
 	}
-	return refreshResult{Tag: m.Tag, State: m.State, Repositories: repositories}
+	return refreshResult{WorkspaceID: m.WorkspaceID, State: m.State, Repositories: repositories}
 }
 
 func newDropResult(m *vcm.Manifest) dropResult {
@@ -338,11 +336,11 @@ func newDropResult(m *vcm.Manifest) dropResult {
 	for _, repository := range m.Repositories {
 		repositories = append(repositories, dropRepositoryResult{Name: repository.Repository.Name, Removed: repository.Removed})
 	}
-	return dropResult{Tag: m.Tag, State: m.State, Repositories: repositories, Backups: append([]string{}, m.Backups...)}
+	return dropResult{WorkspaceID: m.WorkspaceID, State: m.State, Repositories: repositories, Backups: append([]string{}, m.Backups...)}
 }
 
 func newDryRunResult(plan vcm.OperationPlan) dryRunResult {
-	return dryRunResult{Steps: plan.Steps, Blockers: plan.Blockers, Unverified: plan.Unverified, Command: plan.Command, DryRun: plan.DryRun, Force: plan.Force, IgnoreHookFailures: plan.IgnoreHookFailures, DeletesIgnoredContent: plan.DeletesIgnoredContent, SkippedHookPhases: append([]string{}, plan.SkippedHookPhases...), SkipHookGitHooks: plan.SkipHookGitHooks, Tag: plan.Tag, Workspace: plan.Workspace, Resources: append([]string{}, plan.Resources...)}
+	return dryRunResult{Steps: plan.Steps, Blockers: plan.Blockers, Unverified: plan.Unverified, Command: plan.Command, DryRun: plan.DryRun, Force: plan.Force, IgnoreHookFailures: plan.IgnoreHookFailures, DeletesIgnoredContent: plan.DeletesIgnoredContent, SkippedHookPhases: append([]string{}, plan.SkippedHookPhases...), SkipHookGitHooks: plan.SkipHookGitHooks, WorkspaceID: plan.Tag, Workspace: plan.Workspace, Resources: append([]string{}, plan.Resources...)}
 }
 
 func renderJSON(out io.Writer, result any) error {
@@ -551,10 +549,10 @@ func renderHumanStyled(out io.Writer, result any, style humanStyle) error {
 		}
 		return renderTable(out, issues)
 	case createResult:
-		_, err := fmt.Fprintf(out, "%s Change %s with %d repositories.\n%s %s\n", style.paint(semanticGreen, "Created"), value.Tag, len(value.Repositories), style.paint(semanticCyanBold, "Workspace:"), value.Workspace)
+		_, err := fmt.Fprintf(out, "%s workspace %s with %d repositories.\n%s %s\n", style.paint(semanticGreen, "Created"), value.WorkspaceID, len(value.Repositories), style.paint(semanticCyanBold, "Workspace:"), value.Workspace)
 		return err
 	case statusResult:
-		if _, err := fmt.Fprintf(out, "%s %s\n%s %s\n%s %s\n%s %s\n\n", style.paint(semanticCyanBold, "Change:"), value.Tag, style.paint(semanticCyanBold, "State:"), style.paint(statusColor(string(value.State)), string(value.State)), style.paint(semanticCyanBold, "Created:"), value.CreatedAt.Format(time.RFC3339), style.paint(semanticCyanBold, "Workspace:"), value.Workspace); err != nil {
+		if _, err := fmt.Fprintf(out, "%s %s\n%s %s\n%s %s\n%s %s\n\n", style.paint(semanticCyanBold, "Workspace ID:"), value.WorkspaceID, style.paint(semanticCyanBold, "State:"), style.paint(statusColor(string(value.State)), string(value.State)), style.paint(semanticCyanBold, "Created:"), value.CreatedAt.Format(time.RFC3339), style.paint(semanticCyanBold, "Workspace:"), value.Workspace); err != nil {
 			return err
 		}
 		repositories := [][]string{tableHeader(style, "Repository", "Status", "HEAD", "Recorded target", "Current target", "Recovery", "Detail")}
@@ -594,7 +592,7 @@ func renderHumanStyled(out io.Writer, result any, style humanStyle) error {
 		return nil
 	case mergeResult:
 		if value.State == "integrated" {
-			_, err := fmt.Fprintf(out, "Change %s integrated — cleanup pending.\n", value.Tag)
+			_, err := fmt.Fprintf(out, "Workspace %s integrated — cleanup pending.\n", value.WorkspaceID)
 			return err
 		}
 		merged := 0
@@ -603,10 +601,10 @@ func renderHumanStyled(out io.Writer, result any, style humanStyle) error {
 				merged++
 			}
 		}
-		_, err := fmt.Fprintf(out, "%s Change %s (%d/%d repositories).\n", style.paint(semanticGreen, "Merged"), value.Tag, merged, len(value.Repositories))
+		_, err := fmt.Fprintf(out, "%s workspace %s (%d/%d repositories).\n", style.paint(semanticGreen, "Merged"), value.WorkspaceID, merged, len(value.Repositories))
 		return err
 	case refreshResult:
-		_, err := fmt.Fprintf(out, "%s Change %s (%d repositories).\n", style.paint(semanticGreen, "Refreshed"), value.Tag, len(value.Repositories))
+		_, err := fmt.Fprintf(out, "%s workspace %s (%d repositories).\n", style.paint(semanticGreen, "Refreshed"), value.WorkspaceID, len(value.Repositories))
 		return err
 	case dropResult:
 		removed := 0
@@ -615,7 +613,7 @@ func renderHumanStyled(out io.Writer, result any, style humanStyle) error {
 				removed++
 			}
 		}
-		_, err := fmt.Fprintf(out, "%s Change %s (%d/%d repositories removed, %d recovery backups).\n", style.paint(semanticGreen, "Dropped"), value.Tag, removed, len(value.Repositories), len(value.Backups))
+		_, err := fmt.Fprintf(out, "%s workspace %s (%d/%d repositories removed, %d recovery backups).\n", style.paint(semanticGreen, "Dropped"), value.WorkspaceID, removed, len(value.Repositories), len(value.Backups))
 		return err
 	case versionResult:
 		_, err := fmt.Fprintf(out, "vcm %s (%s)\n", value.Version, value.Commit)
@@ -642,8 +640,8 @@ func renderHumanStyled(out io.Writer, result any, style humanStyle) error {
 			fmt.Fprintf(out, "%s %s\n", style.paint(semanticCyanBold, "Skipped hook phases:"), strings.Join(value.SkippedHookPhases, ","))
 			fmt.Fprintf(out, "%s %t\n", style.paint(semanticCyanBold, "Git hooks inside lifecycle hooks suppressed:"), value.SkipHookGitHooks)
 		}
-		if value.Tag != "" {
-			fmt.Fprintf(out, "%s %s\n", style.paint(semanticCyanBold, "Change:"), value.Tag)
+		if value.WorkspaceID != "" {
+			fmt.Fprintf(out, "%s %s\n", style.paint(semanticCyanBold, "Workspace ID:"), value.WorkspaceID)
 		}
 		if value.Workspace != "" {
 			fmt.Fprintf(out, "%s %s\n", style.paint(semanticCyanBold, "Workspace:"), value.Workspace)

@@ -13,7 +13,7 @@ func (e *Engine) Refresh(m *Manifest) error {
 		return err
 	}
 	if m.State != "ready" && m.State != "refreshing" {
-		return fmt.Errorf("Change %s is not ready or recoverable-refresh", m.Tag)
+		return fmt.Errorf("workspace %s is not ready or recoverable-refresh", workspaceSelector(m))
 	}
 	// Validate every canonical checkout before recording or applying refresh.
 	for i := range m.Repositories {
@@ -101,7 +101,7 @@ func (e *Engine) Refresh(m *Manifest) error {
 			return failure("conflict", r.Repository.Name, fmt.Errorf("repository %s refresh conflict preserved for repair; resolve and commit, then retry: %w", r.Repository.Name, mergeErr))
 		}
 		tree = strings.Split(tree, "\n")[0]
-		commit, err := git(r.Path, "commit-tree", tree, "-p", source, "-p", target, "-m", "chore(vcm): refresh "+m.Tag)
+		commit, err := git(r.Path, "commit-tree", tree, "-p", source, "-p", target, "-m", "chore(vcm): refresh "+workspaceName(m))
 		if err != nil {
 			return err
 		}
@@ -112,7 +112,7 @@ func (e *Engine) Refresh(m *Manifest) error {
 		if _, err = git(r.Path, "read-tree", "-u", "-m", source, commit); err != nil {
 			return err
 		}
-		if _, err = git(r.Path, "update-ref", "refs/heads/"+m.Tag, commit, source); err != nil {
+		if _, err = git(r.Path, "update-ref", "refs/heads/"+workspaceName(m), commit, source); err != nil {
 			return err
 		}
 		r.Base, r.Source, r.TargetBefore, r.MergeTree, r.MergeCommit, r.Intent = target, commit, "", "", "", ""

@@ -23,25 +23,25 @@ func extendedGit(t *testing.T, path string, args ...string) string {
 func TestExtendedPublishPreviewAndJSON(t *testing.T) {
 	root, m := cliManagedChange(t)
 	remote := extendedGit(t, root, "remote", "get-url", "origin")
-	preview, err := runJSON[dryRunResult](t, "publish", m.Tag, "--dry-run", "--json", "--workspace", root)
+	preview, err := runJSON[dryRunResult](t, "publish", m.WorkspaceID, "--dry-run", "--json", "--workspace", root)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if preview.Command != "publish" || len(preview.Steps) != 1 || len(preview.Unverified) == 0 {
 		t.Fatalf("incomplete preview: %+v", preview)
 	}
-	if got := extendedGit(t, root, "ls-remote", remote, "refs/heads/"+m.Tag); got != "" {
+	if got := extendedGit(t, root, "ls-remote", remote, "refs/heads/"+m.Name); got != "" {
 		t.Fatal("preview published")
 	}
-	result, err := runJSON[publicationResult](t, "publish", m.Tag, "--json", "--workspace", root)
+	result, err := runJSON[publicationResult](t, "publish", m.WorkspaceID, "--json", "--workspace", root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Change != m.Tag || len(result.Repositories) != 1 {
+	if result.Change != m.WorkspaceID || len(result.Repositories) != 1 {
 		t.Fatalf("publication JSON: %+v", result)
 	}
 	row := result.Repositories[0]
-	if row.Ref != "refs/heads/"+m.Tag || row.SHA != extendedGit(t, m.Workspace, "rev-parse", "HEAD") {
+	if row.Ref != "refs/heads/"+m.Name || row.SHA != extendedGit(t, m.Workspace, "rev-parse", "HEAD") {
 		t.Fatalf("publication revision: %+v", row)
 	}
 	if got := extendedGit(t, root, "ls-remote", remote, row.Ref); !strings.HasPrefix(got, row.SHA) {
@@ -61,14 +61,14 @@ func TestExtendedDiffCommittedPatchAndUnavailableJSON(t *testing.T) {
 	if err = f.Close(); err != nil {
 		t.Fatal(err)
 	}
-	report, err := runJSON[vcm.DiffReport](t, "diff", m.Tag, "--stat", "--patch", "--only=root", "--json", "--workspace", root)
+	report, err := runJSON[vcm.DiffReport](t, "diff", m.WorkspaceID, "--stat", "--patch", "--only=root", "--json", "--workspace", root)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(report.Repositories) != 1 || !strings.Contains(report.Repositories[0].Patch, "working edit") {
 		t.Fatalf("missing working patch: %+v", report)
 	}
-	committed, err := runJSON[vcm.DiffReport](t, "diff", m.Tag, "--committed", "--json", "--workspace", root)
+	committed, err := runJSON[vcm.DiffReport](t, "diff", m.WorkspaceID, "--committed", "--json", "--workspace", root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestExtendedDiffCommittedPatchAndUnavailableJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer os.Rename(gitFile+".saved", gitFile)
-	report, err = runJSON[vcm.DiffReport](t, "diff", m.Tag, "--json", "--workspace", root)
+	report, err = runJSON[vcm.DiffReport](t, "diff", m.WorkspaceID, "--json", "--workspace", root)
 	if err == nil || len(report.Repositories) != 1 || report.Repositories[0].Available || report.Repositories[0].Error == "" {
 		t.Fatalf("partial output lost: %+v, %v", report, err)
 	}
@@ -88,19 +88,19 @@ func TestExtendedDiffCommittedPatchAndUnavailableJSON(t *testing.T) {
 func TestExtendedKeepCleanupAndRecoveryOptions(t *testing.T) {
 	root, m := cliManagedChange(t)
 	for _, extra := range [][]string{{"--retry-hook", "root/create-after/hook"}, {"--acknowledge-effects"}} {
-		args := append([]string{"recover", m.Tag, "--adopt-config", "--workspace", root}, extra...)
+		args := append([]string{"recover", m.WorkspaceID, "--adopt-config", "--workspace", root}, extra...)
 		if _, err := runOutput(t, args...); err == nil {
 			t.Fatalf("conflicting recovery accepted: %v", args)
 		}
 	}
-	adoption, err := runJSON[vcm.ConfigurationAdoption](t, "recover", m.Tag, "--adopt-config", "--dry-run", "--json", "--workspace", root)
+	adoption, err := runJSON[vcm.ConfigurationAdoption](t, "recover", m.WorkspaceID, "--adopt-config", "--dry-run", "--json", "--workspace", root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !adoption.DryRun || adoption.Change != m.Tag {
+	if !adoption.DryRun || adoption.Change != m.WorkspaceID {
 		t.Fatalf("adoption preview: %+v", adoption)
 	}
-	merged, err := runJSON[mergeResult](t, "merge", m.Tag, "--keep", "--json", "--workspace", root)
+	merged, err := runJSON[mergeResult](t, "merge", m.WorkspaceID, "--keep", "--json", "--workspace", root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +110,7 @@ func TestExtendedKeepCleanupAndRecoveryOptions(t *testing.T) {
 	if _, err = os.Stat(m.Workspace); err != nil {
 		t.Fatal("keep removed worktree")
 	}
-	preview, err := runJSON[dryRunResult](t, "cleanup", m.Tag, "--dry-run", "--json", "--workspace", root)
+	preview, err := runJSON[dryRunResult](t, "cleanup", m.WorkspaceID, "--dry-run", "--json", "--workspace", root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func TestExtendedKeepCleanupAndRecoveryOptions(t *testing.T) {
 	if _, err = os.Stat(m.Workspace); err != nil {
 		t.Fatal("cleanup preview removed worktree")
 	}
-	result, err := runJSON[commandResult](t, "cleanup", m.Tag, "--json", "--workspace", root)
+	result, err := runJSON[commandResult](t, "cleanup", m.WorkspaceID, "--json", "--workspace", root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +139,7 @@ func TestExtendedFailureRecoveryCommands(t *testing.T) {
 	if err := os.WriteFile(hook, []byte("#!/bin/sh\nexit 1\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	_, err := runOutput(t, "publish", m.Tag, "--json", "--workspace", root)
+	_, err := runOutput(t, "publish", m.WorkspaceID, "--json", "--workspace", root)
 	var failure *operationError
 	if !errors.As(err, &failure) {
 		t.Fatalf("missing operation error: %v", err)
@@ -161,7 +161,7 @@ func TestExtendedFailureRecoveryCommands(t *testing.T) {
 	if len(document.Progress) != 1 {
 		t.Fatal("publication error JSON duplicated progress")
 	}
-	_, err = runOutput(t, "add", m.Tag, "--only=missing", "--json", "--workspace", root)
+	_, err = runOutput(t, "add", m.WorkspaceID, "--only=missing", "--json", "--workspace", root)
 	if !errors.As(err, &failure) || !strings.Contains(failure.NextAction, "--only 'missing'") {
 		t.Fatalf("add retry lost selection: %v", err)
 	}

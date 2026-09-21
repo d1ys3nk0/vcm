@@ -49,7 +49,7 @@ func TestStatusAndListExposeUnknownInspectionAndHistory(t *testing.T) {
 	if err := os.Rename(m.Workspace, m.Workspace+".moved"); err != nil {
 		t.Fatal(err)
 	}
-	raw, err := runOutput(t, "status", m.Slug, "--json", "--workspace", root)
+	raw, err := runOutput(t, "status", m.WorkspaceID, "--json", "--workspace", root)
 	if err == nil {
 		t.Fatal("missing checkout reported success")
 	}
@@ -74,7 +74,7 @@ func TestStatusAndListExposeUnknownInspectionAndHistory(t *testing.T) {
 	if err = os.Rename(m.Workspace+".moved", m.Workspace); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = runOutput(t, "merge", m.Slug, "--workspace", root, "--no-cd"); err != nil {
+	if _, err = runOutput(t, "merge", m.WorkspaceID, "--workspace", root, "--no-cd"); err != nil {
 		t.Fatal(err)
 	}
 	active, err := runJSON[overviewResult](t, "list", "--json", "--workspace", root)
@@ -85,7 +85,7 @@ func TestStatusAndListExposeUnknownInspectionAndHistory(t *testing.T) {
 	if err != nil || len(all.Changes) != 1 || all.Changes[0].Operation != "merged" || all.Changes[0].Dirty != nil {
 		t.Fatalf("history: %+v %v", all, err)
 	}
-	if _, err = runOutput(t, "path", m.Tag, "--workspace", root); err == nil {
+	if _, err = runOutput(t, "path", m.WorkspaceID, "--workspace", root); err == nil {
 		t.Fatal("navigation accepted removed checkout")
 	}
 }
@@ -132,9 +132,9 @@ func TestShellNavigationPreservesPathsAndExitCodes(t *testing.T) {
  test "$selected" != "$VCM_TEST_ROOT"
  vcm switch --base
  test "$PWD" = "$VCM_TEST_ROOT"
- vcm switch shell-navigation --no-cd
+ vcm switch "$selected" --no-cd
  test "$PWD" = "$VCM_TEST_ROOT"
- vcm switch shell-navigation
+ vcm switch "$selected"
  test "$PWD" = "$selected"
  vcm merge --no-cd
  cd "$VCM_TEST_ROOT"
@@ -190,8 +190,8 @@ func TestInitRejectsLinkedWorktree(t *testing.T) {
 
 func TestMissingConfiguredSelectedRepositoryIsReported(t *testing.T) {
 	root, m := cliManagedChange(t)
-	// A legacy checkpoint remains inspectable after a selected configuration is removed.
-	filename := filepath.Join(root, ".git", "vcm", m.Tag+".json")
+	// A live v5 checkpoint remains inspectable after a selected configuration is removed.
+	filename := filepath.Join(root, ".git", "vcm", m.WorkspaceID+".json")
 	raw, err := os.ReadFile(filename)
 	if err != nil {
 		t.Fatal(err)
@@ -200,8 +200,7 @@ func TestMissingConfiguredSelectedRepositoryIsReported(t *testing.T) {
 	if err = json.Unmarshal(raw, &state); err != nil {
 		t.Fatal(err)
 	}
-	state["version"] = 3
-	state["repositories"].(map[string]any)["retired"] = map[string]any{}
+	state["repositories"].(map[string]any)["retired"] = map[string]any{"base": strings.Repeat("0", 40), "checkout_custody": "vcm", "branch_custody": "vcm"}
 	raw, err = json.Marshal(state)
 	if err != nil {
 		t.Fatal(err)
@@ -212,7 +211,7 @@ func TestMissingConfiguredSelectedRepositoryIsReported(t *testing.T) {
 	for _, command := range []string{"status", "list"} {
 		args := []string{command, "--json", "--workspace", root}
 		if command == "status" {
-			args = append(args, m.Tag)
+			args = append(args, m.WorkspaceID)
 		}
 		output, err := runOutput(t, args...)
 		if err == nil || !strings.Contains(output, "absent from current configuration") {
@@ -223,7 +222,7 @@ func TestMissingConfiguredSelectedRepositoryIsReported(t *testing.T) {
 
 func TestPruneReportsUnreadableStateWithoutMutation(t *testing.T) {
 	root, m := cliManagedChange(t)
-	filename := filepath.Join(root, ".git", "vcm", m.Tag+".json")
+	filename := filepath.Join(root, ".git", "vcm", m.WorkspaceID+".json")
 	if err := os.WriteFile(filename, []byte("{\n"), 0600); err != nil {
 		t.Fatal(err)
 	}

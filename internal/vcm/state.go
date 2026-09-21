@@ -344,9 +344,9 @@ func (s store) hydrate(tag string, p persistedManifest) (*Manifest, error) {
 	} else if err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
-	legacyTag := tag
-	if p.Version == 5 {
-		legacyTag = name
+	legacyTag := ""
+	if p.Version < 5 {
+		legacyTag = tag
 	}
 	m := &Manifest{Version: p.Version, ExpansionAdded: p.ExpansionAdded, HookHistory: p.HookHistory, Recorded: p.Recorded, Generation: p.Generation, Expansion: p.Expansion, Keep: p.Keep, RestoreSnapshot: p.RestoreSnapshot, Published: p.Published, WorkspaceID: workspaceID, Name: name, CreatedAt: createdAt, RootOrigin: rootOrigin, RootCustody: rootCustody, Tag: legacyTag, Workspace: workspace, Origin: root, Config: config, State: p.State, Hooks: p.Hooks, Backups: p.Backups, MergeMessage: p.MergeMessage}
 	if p.Version < 5 {
@@ -473,6 +473,12 @@ func manifestKey(m *Manifest) string {
 func workspaceName(m *Manifest) string {
 	if m.Version == 5 {
 		return m.Name
+	}
+	return m.Tag
+}
+func workspaceSelector(m *Manifest) string {
+	if m.Version == 5 {
+		return m.WorkspaceID
 	}
 	return m.Tag
 }

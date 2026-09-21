@@ -116,7 +116,7 @@ func (e *Engine) Recover(selector, context, key string, acknowledged bool) (Reco
 		if m.Version < 4 {
 			return fmt.Errorf("legacy interrupted Change must finish with previous VCM binary")
 		}
-		result.Change = m.Tag
+		result.Change = workspaceSelector(m)
 		parts := strings.Split(key, "/")
 		if len(parts) != 3 || m.Hooks[key].Status != "running" {
 			return failure("interruption", "", fmt.Errorf("retry-hook must identify an exact recorded running hook"))
@@ -181,7 +181,7 @@ func (e *Engine) Recover(selector, context, key string, acknowledged bool) (Reco
 			}
 		}
 
-		result.RetryCommand = "vcm " + operation + " " + m.Tag
+		result.RetryCommand = "vcm " + operation + " " + workspaceSelector(m)
 		if operation == "create" {
 			names := []string{}
 			for _, r := range m.Repositories {
@@ -189,7 +189,7 @@ func (e *Engine) Recover(selector, context, key string, acknowledged bool) (Reco
 					names = append(names, r.Repository.Name)
 				}
 			}
-			result.RetryCommand = "vcm create " + m.Slug
+			result.RetryCommand = "vcm create " + workspaceName(m)
 			if len(names) > 0 {
 				result.RetryCommand += " --only " + strings.Join(names, ",")
 			} else if len(e.Config.Children) > 0 {
@@ -201,10 +201,10 @@ func (e *Engine) Recover(selector, context, key string, acknowledged bool) (Reco
 			}
 		}
 		if m.State == "expanding" {
-			result.RetryCommand = "vcm add " + m.Tag + " --only " + strings.Join(m.Expansion, ",")
+			result.RetryCommand = "vcm add " + workspaceSelector(m) + " --only " + strings.Join(m.Expansion, ",")
 		}
 		if m.Keep && m.State == "merge-finalizing" {
-			result.RetryCommand = "vcm cleanup " + m.Tag
+			result.RetryCommand = "vcm cleanup " + workspaceSelector(m)
 		}
 		result.RetryCommand += " --workspace " + quoteArgument(m.Origin)
 		if !acknowledged {

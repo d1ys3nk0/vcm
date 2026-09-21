@@ -66,11 +66,10 @@ Each hook has a stable `id` and exactly one nonblank `shell` or `python` body. R
 
 | Variable | Meaning |
 | --- | --- |
-| `VCM_CHANGE_TAG` | Timestamped Change identity and branch name |
-| `VCM_CHANGE_SLUG` | User-supplied Change slug |
+| `VCM_WORKSPACE_ID` | Opaque managed-workspace identity |
 | `VCM_SELECTED_REPOSITORIES` | Ordered comma-separated inventory: `root` followed by selected children |
-| `VCM_ROOT` | Change root checkout |
-| `VCM_ROOT_ORIGIN` | Original root checkout |
+| `VCM_ROOT` | Managed workspace root checkout |
+| `VCM_ROOT_ORIGIN` | Canonical root checkout |
 | `VCM_REPOSITORY_NAME` | Child name, or `root` for root hooks |
 | `VCM_REPOSITORY_ORIGIN` | Original repository checkout |
 | `VCM_REPOSITORY_PATH` | Relevant Change checkout |

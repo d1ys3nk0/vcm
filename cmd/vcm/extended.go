@@ -140,10 +140,10 @@ type publicationResult struct {
 }
 
 func newPublicationResult(m *vcm.Manifest) publicationResult {
-	result := publicationResult{Change: m.Tag, Repositories: []publicationRepositoryResult{}}
+	result := publicationResult{Change: workspaceIdentity(m), Repositories: []publicationRepositoryResult{}}
 	for i := 1; i <= len(m.Repositories); i++ {
 		r := m.Repositories[i%len(m.Repositories)]
-		result.Repositories = append(result.Repositories, publicationRepositoryResult{Name: r.Repository.Name, Ref: "refs/heads/" + m.Tag, SHA: m.Published[r.Repository.Name]})
+		result.Repositories = append(result.Repositories, publicationRepositoryResult{Name: r.Repository.Name, Ref: "refs/heads/" + workspaceBranch(m), SHA: m.Published[r.Repository.Name]})
 	}
 	return result
 }

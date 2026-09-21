@@ -30,7 +30,7 @@ func (e *Engine) baselineUsers(repository Repository, path, local, remote string
 				continue
 			}
 			if ancestor(path, state.Base, local) && !ancestor(path, state.Base, remote) {
-				changeSet[manifest.Tag] = struct{}{}
+				changeSet[workspaceSelector(manifest)] = struct{}{}
 			}
 		}
 	}

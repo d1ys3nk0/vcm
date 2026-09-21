@@ -75,7 +75,7 @@ func (e *Engine) recordConfiguration(m *Manifest) []RecordedRepository {
 
 func (e *Engine) ConfigurationDrift(m *Manifest) []string {
 	if m.Version < 4 || len(m.Recorded) == 0 {
-		return []string{"configuration baseline adoption required: vcm recover " + m.Tag + " --adopt-config"}
+		return []string{"configuration baseline adoption required: vcm recover " + workspaceSelector(m) + " --adopt-config"}
 	}
 	current := e.recordConfiguration(m)
 	changes := []string{}
@@ -97,7 +97,7 @@ func (e *Engine) requireConfiguration(m *Manifest) error {
 		}
 	}
 	if changes := e.ConfigurationDrift(m); len(changes) > 0 {
-		return fmt.Errorf("%s; inspect and explicitly adopt configuration with vcm recover %s --adopt-config", strings.Join(changes, "; "), m.Tag)
+		return fmt.Errorf("%s; inspect and explicitly adopt configuration with vcm recover %s --adopt-config", strings.Join(changes, "; "), workspaceSelector(m))
 	}
 	return nil
 }
@@ -116,7 +116,7 @@ func (e *Engine) AdoptConfiguration(selector, context string) (ConfigurationAdop
 		if err != nil {
 			return err
 		}
-		result.Change = m.Tag
+		result.Change = workspaceSelector(m)
 		result.Changes = e.ConfigurationDrift(m)
 		if m.Version < 4 && m.State != "ready" {
 			return fmt.Errorf("legacy interrupted Change must finish with previous VCM binary before adoption")
@@ -277,10 +277,10 @@ func (e *Engine) AdoptConfiguration(selector, context string) (ConfigurationAdop
 				}
 				if resetForRefresh {
 					result.Changes = append(result.Changes, "canonical baselines advanced; refresh then retry merge")
-					result.RetryCommand = "vcm refresh " + m.Tag + " --workspace " + quoteArgument(m.Origin)
+					result.RetryCommand = "vcm refresh " + workspaceSelector(m) + " --workspace " + quoteArgument(m.Origin)
 				} else {
 					result.Changes = append(result.Changes, "source revisions changed; retry merge with new verification generation")
-					result.RetryCommand = "vcm merge " + m.Tag + " --workspace " + quoteArgument(m.Origin)
+					result.RetryCommand = "vcm merge " + workspaceSelector(m) + " --workspace " + quoteArgument(m.Origin)
 				}
 				for key, outcome := range m.Hooks {
 					if outcome.Status == "running" {

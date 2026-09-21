@@ -157,8 +157,11 @@ func complete(engine *vcm.Engine, kind string) error {
 			return err
 		}
 		for _, m := range all {
-			fmt.Fprintln(os.Stdout, m.Slug)
-			fmt.Fprintln(os.Stdout, m.Tag)
+			if m.Version == 5 {
+				fmt.Fprintln(os.Stdout, m.WorkspaceID)
+			} else {
+				fmt.Fprintln(os.Stdout, m.Tag)
+			}
 		}
 	}
 	return nil

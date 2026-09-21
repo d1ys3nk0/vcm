@@ -208,7 +208,7 @@ func (e *Engine) audit() (auditInventory, error) {
 			}
 			repo := inv.Repositories[state.Repository.Name]
 			if repo == nil {
-				appendIssue(&inv, AuditIssue{Repository: state.Repository.Name, Kind: IssueOwnershipMismatch, Branch: manifest.Tag, Detail: "live state references a repository absent from current configuration; its resources are protected from pruning"})
+				appendIssue(&inv, AuditIssue{Repository: state.Repository.Name, Kind: IssueOwnershipMismatch, Branch: workspaceName(manifest), Detail: "live state references a repository absent from current configuration; its resources are protected from pruning"})
 				continue
 			}
 			expectedPath := state.Path
@@ -223,12 +223,12 @@ func (e *Engine) audit() (auditInventory, error) {
 			if _, statErr := os.Lstat(rawExpectedPath); statErr == nil {
 				if ownershipErr := e.owned(manifest, &state); ownershipErr != nil {
 					repo.OwnershipMismatches[expectedPath] = true
-					appendIssue(&inv, AuditIssue{Repository: repo.Name, Kind: IssueOwnershipMismatch, Path: rawExpectedPath, Branch: manifest.Tag, Detail: ownershipErr.Error() + "; worktree is protected from pruning"})
+					appendIssue(&inv, AuditIssue{Repository: repo.Name, Kind: IssueOwnershipMismatch, Path: rawExpectedPath, Branch: workspaceName(manifest), Detail: ownershipErr.Error() + "; worktree is protected from pruning"})
 				}
 			}
-			repo.ExpectedPaths[expectedPath] = manifest.Tag
+			repo.ExpectedPaths[expectedPath] = workspaceSelector(manifest)
 			repo.ProtectedPaths[expectedPath] = true
-			repo.AllowedBranches[manifest.Tag] = true
+			repo.AllowedBranches[workspaceName(manifest)] = true
 		}
 	}
 
