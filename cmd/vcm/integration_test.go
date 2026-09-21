@@ -45,6 +45,44 @@ func TestJSONHarnessIntegrationPreservesSettingsAndIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestHarnessIntegrationHumanOutputCoversLifecycle(t *testing.T) {
+	for _, test := range []struct {
+		harness string
+		label   string
+	}{{"codex", "Codex"}, {"claude", "Claude"}, {"opencode", "OpenCode"}} {
+		t.Run(test.harness, func(t *testing.T) {
+			root := cliCleanWorkspace(t)
+			path, err := integrationFile(root, test.harness)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertOutput := func(args []string, expected ...string) {
+				t.Helper()
+				output, runErr := runOutput(t, args...)
+				if runErr != nil {
+					t.Fatalf("vcm %s: %s: %v", strings.Join(args, " "), output, runErr)
+				}
+				for _, want := range expected {
+					if !strings.Contains(output, want) {
+						t.Fatalf("vcm %s output is missing %q: %q", strings.Join(args, " "), want, output)
+					}
+				}
+			}
+
+			base := []string{"integrate", test.harness, "--workspace", root}
+			assertOutput(append(append([]string{}, base...), "--dry-run"), "Dry run: would install "+test.label+" integration.", path)
+			if _, err := os.Stat(path); !os.IsNotExist(err) {
+				t.Fatalf("install preview wrote %s", path)
+			}
+			assertOutput(base, "Installed "+test.label+" integration.", path)
+			assertOutput(base, test.label+" integration is already installed.", path)
+			assertOutput(append(append([]string{}, base...), "--remove", "--dry-run"), "Dry run: would remove "+test.label+" integration.", path)
+			assertOutput(append(append([]string{}, base...), "--remove"), "Removed "+test.label+" integration.", path)
+			assertOutput(append(append([]string{}, base...), "--remove"), test.label+" integration is already removed.", path)
+		})
+	}
+}
+
 func TestCodexIntegrationUsesSupportedHandlerFields(t *testing.T) {
 	root := t.TempDir()
 	if _, err := integrateHarness(root, "codex", false, false); err != nil {

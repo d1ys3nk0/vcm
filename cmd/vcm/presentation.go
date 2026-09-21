@@ -509,6 +509,8 @@ func renderHumanStyled(out io.Writer, result any, style humanStyle) error {
 	case commandResult:
 		_, err := fmt.Fprintf(out, "%s %s.\n%s %s\n", commandLabel(value.Command), style.paint(semanticGreen, "complete"), style.paint(semanticCyanBold, "Workspace:"), value.Workspace)
 		return err
+	case integrationResult:
+		return renderIntegrationResult(out, normalizeHarnessOutput(value), style)
 	case vcm.AuditReport:
 		repositories := [][]string{tableHeader(style, "Repository", "State", "Origin")}
 		for _, repository := range value.Repositories {
@@ -659,6 +661,52 @@ func renderHumanStyled(out io.Writer, result any, style humanStyle) error {
 	default:
 		return fmt.Errorf("unsupported output type %T", result)
 	}
+}
+
+func renderIntegrationResult(out io.Writer, result integrationResult, style humanStyle) error {
+	harness, ok := map[string]string{"codex": "Codex", "claude": "Claude", "opencode": "OpenCode"}[result.Harness]
+	if !ok {
+		return fmt.Errorf("unsupported integration harness %q", result.Harness)
+	}
+	var summary string
+	switch result.Action {
+	case "installed":
+		if result.DryRun {
+			summary = "Dry run: would install " + harness + " integration."
+		} else {
+			summary = "Installed " + harness + " integration."
+		}
+	case "already installed":
+		summary = harness + " integration is already installed."
+	case "removed":
+		if result.DryRun {
+			summary = "Dry run: would remove " + harness + " integration."
+		} else {
+			summary = "Removed " + harness + " integration."
+		}
+	case "already removed":
+		summary = harness + " integration is already removed."
+	default:
+		return fmt.Errorf("unsupported integration action %q", result.Action)
+	}
+	if _, err := fmt.Fprintln(out, summary); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(out, style.paint(semanticCyanBold, "Files:")); err != nil {
+		return err
+	}
+	for _, path := range result.Files {
+		if _, err := fmt.Fprintf(out, "  %s\n", path); err != nil {
+			return err
+		}
+	}
+	if result.Action == "installed" || result.Action == "already installed" {
+		if guidance := integrationTrustGuidance(result.Harness); guidance != "" {
+			_, err := fmt.Fprintln(out, guidance)
+			return err
+		}
+	}
+	return nil
 }
 
 func auditIssueTarget(issue vcm.AuditIssue) string {
