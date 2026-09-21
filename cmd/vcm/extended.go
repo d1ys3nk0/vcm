@@ -135,12 +135,12 @@ type publicationRepositoryResult struct {
 	SHA  string `json:"sha"`
 }
 type publicationResult struct {
-	Change       string                        `json:"change"`
+	WorkspaceID  string                        `json:"workspace_id"`
 	Repositories []publicationRepositoryResult `json:"repositories"`
 }
 
 func newPublicationResult(m *vcm.Manifest) publicationResult {
-	result := publicationResult{Change: workspaceIdentity(m), Repositories: []publicationRepositoryResult{}}
+	result := publicationResult{WorkspaceID: workspaceIdentity(m), Repositories: []publicationRepositoryResult{}}
 	for i := 1; i <= len(m.Repositories); i++ {
 		r := m.Repositories[i%len(m.Repositories)]
 		result.Repositories = append(result.Repositories, publicationRepositoryResult{Name: r.Repository.Name, Ref: "refs/heads/" + workspaceBranch(m), SHA: m.Published[r.Repository.Name]})

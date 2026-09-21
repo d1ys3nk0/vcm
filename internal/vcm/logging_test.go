@@ -166,7 +166,7 @@ func TestOperationLoggingCoversLifecycleOutcomes(t *testing.T) {
 		"[refresh/repo0 @ " + m.Repositories[1].Path + "] updated base ",
 		"[merge/repo0 @ " + childOrigin + "] trunk main unchanged at ",
 		"[merge/root @ " + e.Root + "] applied trunk main ",
-		"[merge/root @ " + m.Repositories[0].Path + "] removed managed worktree and branch " + m.Tag,
+		"[merge/root @ " + m.Repositories[0].Path + "] removed managed worktree and branch " + m.Name,
 	} {
 		if !strings.Contains(log, want) {
 			t.Errorf("missing %q in operation log:\n%s", want, log)
@@ -190,7 +190,7 @@ func TestDropLogsRecoveryBackupAndRemoval(t *testing.T) {
 		t.Fatal(err)
 	}
 	prefix := "[drop/root @ " + m.Workspace + "] "
-	for _, want := range []string{prefix + "created recovery backup ", prefix + "removed managed worktree and branch " + m.Tag} {
+	for _, want := range []string{prefix + "created recovery backup ", prefix + "removed managed worktree and branch " + m.Name} {
 		if !strings.Contains(output.String(), want) {
 			t.Errorf("missing %q in drop log:\n%s", want, output.String())
 		}

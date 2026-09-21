@@ -12,7 +12,7 @@ type changePublication struct {
 
 func (e *Engine) publicationRepositories(m *Manifest) ([]changePublication, error) {
 	if m.State != "ready" {
-		return nil, fmt.Errorf("Change must be ready to publish")
+		return nil, fmt.Errorf("managed workspace must be ready to publish")
 	}
 	if err := e.ensureCurrentSelection(m); err != nil {
 		return nil, err
@@ -76,7 +76,7 @@ func publicationFailure(repos []changePublication, index int, published bool, er
 	return result
 }
 
-// Publish publishes frozen Change revisions after preflighting every destination.
+// Publish publishes frozen workspace revisions after preflighting every destination.
 func (e *Engine) Publish(m *Manifest) error {
 	repos, err := e.publicationRepositories(m)
 	if err != nil {
@@ -101,7 +101,7 @@ func (e *Engine) Publish(m *Manifest) error {
 				return publicationFailure(repos, i, false, er)
 			}
 			if !ancestor(p.state.Path, sha, p.sha) {
-				return publicationFailure(repos, i, false, fmt.Errorf("repository %s: remote Change branch is not an ancestor of requested publication", p.state.Repository.Name))
+				return publicationFailure(repos, i, false, fmt.Errorf("repository %s: remote workspace branch is not an ancestor of requested publication", p.state.Repository.Name))
 			}
 		}
 	}
@@ -133,7 +133,7 @@ func (e *Engine) Publish(m *Manifest) error {
 	return nil
 }
 func (e *Engine) PublishPlan(m *Manifest) OperationPlan {
-	plan := OperationPlan{Command: "publish", DryRun: true, Tag: workspaceSelector(m), Workspace: m.Workspace, Steps: []PlanStep{}, Blockers: []string{}, Unverified: []string{"remote availability and current remote revisions"}}
+	plan := OperationPlan{Command: "publish", DryRun: true, WorkspaceID: workspaceSelector(m), Workspace: m.Workspace, Steps: []PlanStep{}, Blockers: []string{}, Unverified: []string{"remote availability and current remote revisions"}}
 	repos, err := e.publicationRepositories(m)
 	if err != nil {
 		plan.Blockers = append(plan.Blockers, err.Error())

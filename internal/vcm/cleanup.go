@@ -3,12 +3,12 @@ package vcm
 import "os"
 
 func (e *Engine) CleanupPlan(m *Manifest) OperationPlan {
-	plan := OperationPlan{Command: "cleanup", DryRun: true, Tag: workspaceSelector(m), Workspace: m.Workspace, DeletesIgnoredContent: true}
+	plan := OperationPlan{Command: "cleanup", DryRun: true, WorkspaceID: workspaceSelector(m), Workspace: m.Workspace, DeletesIgnoredContent: true}
 	if err := e.ensureCurrentSelection(m); err != nil {
 		plan.Blockers = append(plan.Blockers, err.Error())
 	}
 	if m.State != "integrated" && !(m.State == "merge-finalizing" && m.Keep) {
-		plan.Blockers = append(plan.Blockers, "Change has no retained integration awaiting cleanup")
+		plan.Blockers = append(plan.Blockers, "managed workspace has no retained integration awaiting cleanup")
 	}
 	for i := range m.Repositories {
 		r := &m.Repositories[i]

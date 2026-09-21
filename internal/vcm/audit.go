@@ -226,7 +226,7 @@ func (e *Engine) audit() (auditInventory, error) {
 					appendIssue(&inv, AuditIssue{Repository: repo.Name, Kind: IssueOwnershipMismatch, Path: rawExpectedPath, Branch: workspaceName(manifest), Detail: ownershipErr.Error() + "; worktree is protected from pruning"})
 				}
 			}
-			repo.ExpectedPaths[expectedPath] = workspaceSelector(manifest)
+			repo.ExpectedPaths[expectedPath] = workspaceName(manifest)
 			repo.ProtectedPaths[expectedPath] = true
 			repo.AllowedBranches[workspaceName(manifest)] = true
 		}

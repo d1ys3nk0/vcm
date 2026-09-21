@@ -214,9 +214,14 @@ func newListResults(manifests []*vcm.Manifest, cwd string) []listResult {
 			}
 		}
 		current := cwd == manifest.Workspace || strings.HasPrefix(cwd, manifest.Workspace+string(filepath.Separator))
+		workspaceID, name, createdAt := workspaceIdentity(manifest), manifest.Name, manifest.CreatedAt
+		if manifest.Version < 5 {
+			name = manifest.Slug
+			createdAt, _ = time.Parse("060102150405", manifest.Tag[:12])
+		}
 		results = append(results, listResult{
-			WorkspaceID: manifest.WorkspaceID, Name: manifest.Name, RootCustody: manifest.RootCustody, Workspace: manifest.Workspace, State: manifest.State,
-			CreatedAt: manifest.CreatedAt, RepositoryCount: len(manifest.Repositories), MergedCount: merged, RemovedCount: removed, current: current,
+			WorkspaceID: workspaceID, Name: name, RootCustody: manifest.RootCustody, Workspace: manifest.Workspace, State: manifest.State,
+			CreatedAt: createdAt, RepositoryCount: len(manifest.Repositories), MergedCount: merged, RemovedCount: removed, current: current,
 		})
 	}
 	sort.Slice(results, func(i, j int) bool {
@@ -292,7 +297,7 @@ func newStatusResult(m *vcm.Manifest, report vcm.StatusReport) statusResult {
 }
 
 func newTreeResult(report vcm.TreeReport) treeResult {
-	result := treeResult{Workspace: report.Workspace, Context: report.Context, WorkspaceID: report.Change}
+	result := treeResult{Workspace: report.Workspace, Context: report.Context, WorkspaceID: report.WorkspaceID}
 	for _, repository := range report.Repositories {
 		item := treeRepositoryResult{Name: repository.Name, Path: repository.Path, Available: repository.Available, Detail: repository.Detail, TreeState: repository.TreeState}
 		if repository.Available {
@@ -340,7 +345,7 @@ func newDropResult(m *vcm.Manifest) dropResult {
 }
 
 func newDryRunResult(plan vcm.OperationPlan) dryRunResult {
-	return dryRunResult{Steps: plan.Steps, Blockers: plan.Blockers, Unverified: plan.Unverified, Command: plan.Command, DryRun: plan.DryRun, Force: plan.Force, IgnoreHookFailures: plan.IgnoreHookFailures, DeletesIgnoredContent: plan.DeletesIgnoredContent, SkippedHookPhases: append([]string{}, plan.SkippedHookPhases...), SkipHookGitHooks: plan.SkipHookGitHooks, WorkspaceID: plan.Tag, Workspace: plan.Workspace, Resources: append([]string{}, plan.Resources...)}
+	return dryRunResult{Steps: plan.Steps, Blockers: plan.Blockers, Unverified: plan.Unverified, Command: plan.Command, DryRun: plan.DryRun, Force: plan.Force, IgnoreHookFailures: plan.IgnoreHookFailures, DeletesIgnoredContent: plan.DeletesIgnoredContent, SkippedHookPhases: append([]string{}, plan.SkippedHookPhases...), SkipHookGitHooks: plan.SkipHookGitHooks, WorkspaceID: plan.WorkspaceID, Workspace: plan.Workspace, Resources: append([]string{}, plan.Resources...)}
 }
 
 func renderJSON(out io.Writer, result any) error {
@@ -458,9 +463,9 @@ func renderHumanStyled(out io.Writer, result any, style humanStyle) error {
 		}
 		return nil
 	case vcm.ConfigurationAdoption:
-		fmt.Fprintf(out, "Configuration %s\n", value.Change)
-		for _, change := range value.Changes {
-			fmt.Fprintln(out, change)
+		fmt.Fprintf(out, "Configuration %s\n", value.WorkspaceID)
+		for _, drift := range value.ConfigurationDrift {
+			fmt.Fprintln(out, drift)
 		}
 		if value.RetryCommand != "" {
 			fmt.Fprintln(out, "Next: "+value.RetryCommand)

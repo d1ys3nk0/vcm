@@ -150,15 +150,15 @@ func secureDirectory(path string, create bool) error {
 }
 func validateIdentity(tag string) error {
 	if !tagPattern.MatchString(tag) {
-		return fmt.Errorf("invalid manifest Change identity")
+		return fmt.Errorf("invalid legacy workspace identity")
 	}
 	if _, err := time.Parse("060102150405", tag[:12]); err != nil {
-		return fmt.Errorf("invalid Change timestamp: %w", err)
+		return fmt.Errorf("invalid legacy workspace timestamp: %w", err)
 	}
 	return nil
 }
 func validatePersisted(s store, tag string, p *persistedManifest) error {
-	if p.Version == 4 {
+	if p.Version == 4 || p.Version == 5 {
 		if err := validateVersionFour(p); err != nil {
 			return err
 		}
@@ -258,7 +258,10 @@ func validHookOutcomeKey(key string, repositories map[string]persistedRepoState)
 	return hookPhases[parts[1]]
 }
 func persisted(m *Manifest) persistedManifest {
-	p := persistedManifest{WorkspaceID: m.WorkspaceID, Name: m.Name, RootOrigin: m.RootOrigin, RootCustody: m.RootCustody, Workspace: m.Workspace, Version: m.Version, ExpansionAdded: m.ExpansionAdded, HookHistory: m.HookHistory, Recorded: m.Recorded, Generation: m.Generation, Expansion: m.Expansion, Keep: m.Keep, RestoreSnapshot: m.RestoreSnapshot, Published: m.Published, State: m.State, Repositories: map[string]persistedRepoState{}, Hooks: m.Hooks, Backups: m.Backups, MergeMessage: m.MergeMessage}
+	p := persistedManifest{WorkspaceID: m.WorkspaceID, Name: m.Name, RootOrigin: m.RootOrigin, RootCustody: m.RootCustody, Version: m.Version, ExpansionAdded: m.ExpansionAdded, HookHistory: m.HookHistory, Recorded: m.Recorded, Generation: m.Generation, Expansion: m.Expansion, Keep: m.Keep, RestoreSnapshot: m.RestoreSnapshot, Published: m.Published, State: m.State, Repositories: map[string]persistedRepoState{}, Hooks: m.Hooks, Backups: m.Backups, MergeMessage: m.MergeMessage}
+	if m.Version == 5 {
+		p.Workspace = m.Workspace
+	}
 	if !m.CreatedAt.IsZero() {
 		p.CreatedAt = m.CreatedAt.UTC().Format(time.RFC3339Nano)
 	}
@@ -340,7 +343,7 @@ func (s store) hydrate(tag string, p persistedManifest) (*Manifest, error) {
 		}
 	}
 	if info, err := os.Lstat(workspace); err == nil && info.Mode()&os.ModeSymlink != 0 {
-		return nil, fmt.Errorf("derived Change workspace path is a symlink")
+		return nil, fmt.Errorf("derived legacy workspace path is a symlink")
 	} else if err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}

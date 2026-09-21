@@ -37,10 +37,10 @@ func TestExpansionPreservesWorkAndResumesHooks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = e.AdoptConfiguration(m.Tag, e.Root); err != nil {
+	if _, err = e.AdoptConfiguration(m.WorkspaceID, e.Root); err != nil {
 		t.Fatal(err)
 	}
-	m, err = e.Select(m.Tag, e.Root)
+	m, err = e.Select(m.WorkspaceID, e.Root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +183,7 @@ func TestConfigurationAdoptionIsExplicitAndPreservesHistoricalHooks(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	m, err = e.Select(m.Tag, e.Root)
+	m, err = e.Select(m.WorkspaceID, e.Root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,14 +191,14 @@ func TestConfigurationAdoptionIsExplicitAndPreservesHistoricalHooks(t *testing.T
 		t.Fatal("drift not blocked")
 	}
 	e.DryRun = true
-	preview, err := e.AdoptConfiguration(m.Tag, e.Root)
+	preview, err := e.AdoptConfiguration(m.WorkspaceID, e.Root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(preview.Changes) == 0 {
+	if len(preview.ConfigurationDrift) == 0 {
 		t.Fatal("missing drift report")
 	}
-	m, err = e.Select(m.Tag, e.Root)
+	m, err = e.Select(m.WorkspaceID, e.Root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,10 +206,10 @@ func TestConfigurationAdoptionIsExplicitAndPreservesHistoricalHooks(t *testing.T
 		t.Fatal("dry run adopted changes")
 	}
 	e.DryRun = false
-	if _, err = e.AdoptConfiguration(m.Tag, e.Root); err != nil {
+	if _, err = e.AdoptConfiguration(m.WorkspaceID, e.Root); err != nil {
 		t.Fatal(err)
 	}
-	m, err = e.Select(m.Tag, e.Root)
+	m, err = e.Select(m.WorkspaceID, e.Root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,7 +277,7 @@ func TestExpansionRetryPreviewReportsCheckpointsWithoutMutation(t *testing.T) {
 	if err = e.store.save(m); err != nil {
 		t.Fatal(err)
 	}
-	filename := filepath.Join(e.store.dir, m.Tag+".json")
+	filename := filepath.Join(e.store.dir, m.WorkspaceID+".json")
 	before, err := os.ReadFile(filename)
 	if err != nil {
 		t.Fatal(err)
@@ -322,7 +322,7 @@ func TestExpansionRejectsMalformedSavedJournal(t *testing.T) {
 	if err = e.Add(m, "repo1"); err == nil {
 		t.Fatal("hook should fail")
 	}
-	filename := filepath.Join(e.store.dir, m.Tag+".json")
+	filename := filepath.Join(e.store.dir, m.WorkspaceID+".json")
 	original, err := os.ReadFile(filename)
 	if err != nil {
 		t.Fatal(err)

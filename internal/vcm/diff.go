@@ -40,7 +40,7 @@ type DiffRepository struct {
 }
 
 type DiffReport struct {
-	Change       string           `json:"change"`
+	WorkspaceID  string           `json:"workspace_id"`
 	Committed    bool             `json:"committed"`
 	Repositories []DiffRepository `json:"repositories"`
 }
@@ -50,9 +50,9 @@ type DiffReport struct {
 func (e *Engine) Diff(m *Manifest, opts DiffOptions) (DiffReport, error) {
 	report := DiffReport{Committed: opts.Committed, Repositories: []DiffRepository{}}
 	if m == nil {
-		return report, fmt.Errorf("diff requires a Change")
+		return report, fmt.Errorf("diff requires a managed workspace")
 	}
-	report.Change = workspaceSelector(m)
+	report.WorkspaceID = workspaceSelector(m)
 	selected := map[string]bool{}
 	if opts.Only != "" {
 		for _, name := range strings.Split(opts.Only, ",") {
@@ -104,7 +104,7 @@ func (e *Engine) inspectDiff(m *Manifest, r *RepoState, opts DiffOptions, item *
 		}
 	}
 	if r.Removed || !r.Owned {
-		return fmt.Errorf("Change worktree is unavailable")
+		return fmt.Errorf("managed workspace worktree is unavailable")
 	}
 	if err := e.owned(m, r); err != nil {
 		return err

@@ -56,30 +56,20 @@ func TestCreateHookCannotSwitchCanonicalBranch(t *testing.T) {
 		t.Fatalf("accepted branch-changing hook: %v", err)
 	}
 }
-func TestSelectUniqueNamesAndHistoricalAmbiguity(t *testing.T) {
+func TestSelectUsesWorkspaceIDOrPathButNeverWorkspaceName(t *testing.T) {
 	e := fixture(t, 0)
 	m, err := e.Create("named")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if found, err := e.Select("named", e.Root); err != nil || found.Tag != m.Tag {
-		t.Fatalf("slug selection: %v", err)
+	if _, err := e.Select("named", e.Root); err == nil {
+		t.Fatal("workspace name was accepted as a selector")
 	}
-	if found, err := e.Select("../"+filepath.Base(m.Workspace), e.Root); err != nil || found.Tag != m.Tag {
+	if found, err := e.Select("../"+filepath.Base(m.Workspace), e.Root); err != nil || found.WorkspaceID != m.WorkspaceID {
 		t.Fatalf("relative context: %v", err)
 	}
-	copy := *m
-	copy.Tag = "250101010101-named"
-	copy.Workspace = changeWorkspace(e.Root, copy.Tag)
-	copy.State = "dropped"
-	if err = e.store.save(&copy); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = e.Select("named", e.Root); err == nil || !strings.Contains(err.Error(), m.Tag) || !strings.Contains(err.Error(), copy.Tag) {
-		t.Fatalf("missing ambiguity candidates: %v", err)
-	}
-	if found, err := e.Select(m.Tag, e.Root); err != nil || found.Tag != m.Tag {
-		t.Fatalf("exact tag: %v", err)
+	if found, err := e.Select(m.WorkspaceID, e.Root); err != nil || found.WorkspaceID != m.WorkspaceID {
+		t.Fatalf("exact workspace ID: %v", err)
 	}
 }
 func TestRecoveryAcknowledgesOnlyInterruptedHook(t *testing.T) {
@@ -96,9 +86,9 @@ func TestRecoveryAcknowledgesOnlyInterruptedHook(t *testing.T) {
 	if err = e.store.save(m); err != nil {
 		t.Fatal(err)
 	}
-	filename := filepath.Join(e.store.dir, m.Tag+".json")
+	filename := filepath.Join(e.store.dir, m.WorkspaceID+".json")
 	before, _ := os.ReadFile(filename)
-	if _, err = e.Recover(m.Tag, e.Root, key, false); err == nil {
+	if _, err = e.Recover(m.WorkspaceID, e.Root, key, false); err == nil {
 		t.Fatal("accepted missing acknowledgment")
 	}
 	after, _ := os.ReadFile(filename)
@@ -106,7 +96,7 @@ func TestRecoveryAcknowledgesOnlyInterruptedHook(t *testing.T) {
 		t.Fatal("missing acknowledgment changed state")
 	}
 	e.DryRun = true
-	if _, err = e.Recover(m.Tag, e.Root, key, true); err != nil {
+	if _, err = e.Recover(m.WorkspaceID, e.Root, key, true); err != nil {
 		t.Fatal(err)
 	}
 	after, _ = os.ReadFile(filename)
@@ -114,21 +104,21 @@ func TestRecoveryAcknowledgesOnlyInterruptedHook(t *testing.T) {
 		t.Fatal("preview changed state")
 	}
 	e.DryRun = false
-	result, err := e.Recover(m.Tag, e.Root, key, true)
+	result, err := e.Recover(m.WorkspaceID, e.Root, key, true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(result.RetryCommand, "--workspace") {
 		t.Fatal("retry lacks canonical context")
 	}
-	loaded, err := e.Select(m.Tag, e.Root)
+	loaded, err := e.Select(m.WorkspaceID, e.Root)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if loaded.Hooks[key].Status != "failed" || loaded.Repositories[0].Base != m.Repositories[0].Base {
 		t.Fatal("recovery modified wrong state")
 	}
-	if _, err = e.Recover(m.Tag, e.Root, key, true); err == nil {
+	if _, err = e.Recover(m.WorkspaceID, e.Root, key, true); err == nil {
 		t.Fatal("accepted already acknowledged hook")
 	}
 }
@@ -140,7 +130,7 @@ func TestLegacyCreationAndJournalsBlockWithoutChangingEvidence(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			filename := filepath.Join(e.store.dir, m.Tag+".json")
+			filename := filepath.Join(e.store.dir, m.WorkspaceID+".json")
 			if kind == "creating" {
 				raw, _ := os.ReadFile(filename)
 				var state persistedManifest
@@ -150,9 +140,14 @@ func TestLegacyCreationAndJournalsBlockWithoutChangingEvidence(t *testing.T) {
 				state.Version = 2
 				state.State = "creating"
 				raw, _ = json.Marshal(state)
-				if err = os.WriteFile(filename, raw, 0600); err != nil {
+				legacyFilename := filepath.Join(e.store.dir, newTag("legacy")+".json")
+				if err = os.WriteFile(legacyFilename, raw, 0600); err != nil {
 					t.Fatal(err)
 				}
+				if err = os.Remove(filename); err != nil {
+					t.Fatal(err)
+				}
+				filename = legacyFilename
 			} else {
 				filename = filepath.Join(e.store.dir, "root.sync")
 				if err = os.WriteFile(filename, []byte("legacy evidence"), 0600); err != nil {
@@ -179,7 +174,7 @@ func TestDryRunReportsBlockedDropWithoutMutation(t *testing.T) {
 		t.Fatal(err)
 	}
 	commitFile(t, m.Repositories[1].Path, "new.txt", "work\n")
-	filename := filepath.Join(e.store.dir, m.Tag+".json")
+	filename := filepath.Join(e.store.dir, m.WorkspaceID+".json")
 	before, _ := os.ReadFile(filename)
 	plan := e.Plan("drop", m)
 	if len(plan.Blockers) == 0 {
@@ -206,11 +201,11 @@ func TestCreatePreviewReusesInterruptedCheckpointAndBlocksRunningHook(t *testing
 	if err = e.store.save(m); err != nil {
 		t.Fatal(err)
 	}
-	plan, err := e.CreatePlan(m.Slug)
+	plan, err := e.CreatePlan(m.Name)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Tag != m.Tag || len(plan.Blockers) == 0 {
+	if plan.WorkspaceID != m.WorkspaceID || len(plan.Blockers) == 0 {
 		t.Fatalf("retry preview lost identity or interruption: %+v", plan)
 	}
 	complete := false

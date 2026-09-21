@@ -52,7 +52,7 @@ func (e *Engine) Drop(m *Manifest) error {
 		return fmt.Errorf("workspace merge is incomplete; retry merge %s", workspaceSelector(m))
 	}
 	if m.State == "refreshing" {
-		return fmt.Errorf("Change refresh is incomplete; run vcm refresh from %s", m.Workspace)
+		return fmt.Errorf("workspace refresh is incomplete; run vcm refresh from %s", m.Workspace)
 	}
 	for i := range m.Repositories {
 		r := &m.Repositories[i]
@@ -453,7 +453,7 @@ func (e *Engine) Plan(command string, m *Manifest) OperationPlan {
 	}
 	force := e.Force
 
-	return e.enrichPlan(OperationPlan{Command: command, DryRun: true, Force: force, IgnoreHookFailures: e.IgnoreHookFailures, DeletesIgnoredContent: command == "merge", SkippedHookPhases: skipped, SkipHookGitHooks: e.SkipHookGitHooks, Tag: func() string {
+	return e.enrichPlan(OperationPlan{Command: command, DryRun: true, Force: force, IgnoreHookFailures: e.IgnoreHookFailures, DeletesIgnoredContent: command == "merge", SkippedHookPhases: skipped, SkipHookGitHooks: e.SkipHookGitHooks, WorkspaceID: func() string {
 		if m != nil {
 			return workspaceSelector(m)
 		}
@@ -637,7 +637,7 @@ func (e *Engine) Merge(m *Manifest, messages ...string) error {
 		return fmt.Errorf("workspace integrated; run vcm cleanup %s", workspaceSelector(m))
 	}
 	if m.State == "expanding" || m.State == "restoring" {
-		return fmt.Errorf("Change %s operation is incomplete", m.State)
+		return fmt.Errorf("workspace %s operation is incomplete", m.State)
 	}
 	if err := e.ensureCurrentSelection(m); err != nil {
 		return err
@@ -649,7 +649,7 @@ func (e *Engine) Merge(m *Manifest, messages ...string) error {
 		return fmt.Errorf("workspace creation incomplete; retry create %s", workspaceSelector(m))
 	}
 	if m.State == "refreshing" {
-		return fmt.Errorf("Change refresh incomplete; run vcm refresh from %s", m.Workspace)
+		return fmt.Errorf("workspace refresh incomplete; run vcm refresh from %s", m.Workspace)
 	}
 	if m.State == "dropping" {
 		return fmt.Errorf("workspace is being dropped; retry drop %s", workspaceSelector(m))
@@ -743,7 +743,7 @@ func (e *Engine) Cleanup(m *Manifest) error {
 		return err
 	}
 	if m.State != "integrated" && !(m.State == "merge-finalizing" && m.Keep) {
-		return fmt.Errorf("Change has no retained integration awaiting cleanup")
+		return fmt.Errorf("managed workspace has no retained integration awaiting cleanup")
 	}
 	for i := range m.Repositories {
 		r := &m.Repositories[i]

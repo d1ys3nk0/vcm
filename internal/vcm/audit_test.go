@@ -214,7 +214,7 @@ func TestCheckAuditsCleanWorkspaceAndManagedChanges(t *testing.T) {
 		t.Fatalf("managed Change was not clean: %+v", report.Issues)
 	}
 	for _, repository := range m.Repositories {
-		if issueExists(report, repository.Repository.Name, IssueUnexpectedBranch, m.Tag) {
+		if issueExists(report, repository.Repository.Name, IssueUnexpectedBranch, m.Name) {
 			t.Fatalf("managed branch was unexpected in %s", repository.Repository.Name)
 		}
 	}
@@ -345,7 +345,7 @@ func TestCheckProtectsManagedBranchAtMismatchedPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, action := range preview.Actions {
-		if action.Target == moved || action.Target == m.Tag {
+		if action.Target == moved || action.Target == m.Name {
 			t.Fatalf("protected live-state resource became prune candidate: %+v", action)
 		}
 	}
@@ -380,7 +380,7 @@ func TestCheckRejectsAliasedManagedPathWithoutPruneCandidate(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, action := range preview.Actions {
-		if action.Repository == "repo0" && (action.Target == managed.Path || action.Target == realPath || action.Target == m.Tag) {
+		if action.Repository == "repo0" && (action.Target == managed.Path || action.Target == realPath || action.Target == m.Name) {
 			t.Fatalf("aliased managed resource became prune candidate: %+v", action)
 		}
 	}
@@ -426,13 +426,13 @@ func TestInvalidStateBlocksEveryPruneAction(t *testing.T) {
 	mustGit(t, e.Root, "branch", "otherwise-unexpected")
 	unexpectedPath := filepath.Join(filepath.Dir(e.Root), "otherwise-unexpected-worktree")
 	mustGit(t, e.Root, "worktree", "add", "-b", "otherwise-unexpected-worktree", unexpectedPath, "main")
-	put(t, filepath.Join(e.store.dir, m.Tag+".json"), "{\n")
+	put(t, filepath.Join(e.store.dir, m.WorkspaceID+".json"), "{\n")
 
 	preview, err := e.PruneDryRun()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if preview.Complete || len(preview.Actions) != 0 || !issueExists(AuditReport{Issues: preview.RemainingIssues}, "root", IssueInspectionError, filepath.Join(e.store.dir, m.Tag+".json")) {
+	if preview.Complete || len(preview.Actions) != 0 || !issueExists(AuditReport{Issues: preview.RemainingIssues}, "root", IssueInspectionError, filepath.Join(e.store.dir, m.WorkspaceID+".json")) {
 		t.Fatalf("invalid state did not block dry-run candidates: %+v", preview)
 	}
 	confirmations := 0
@@ -456,7 +456,7 @@ func TestInvalidStateBlocksEveryPruneAction(t *testing.T) {
 			t.Fatalf("worktree %s was removed: %v", path, err)
 		}
 	}
-	for _, branch := range []string{m.Tag, "otherwise-unexpected", "otherwise-unexpected-worktree"} {
+	for _, branch := range []string{m.Name, "otherwise-unexpected", "otherwise-unexpected-worktree"} {
 		if mustGit(t, e.Root, "show-ref", "--verify", "refs/heads/"+branch) == "" {
 			t.Fatalf("branch %s was removed", branch)
 		}

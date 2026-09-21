@@ -88,7 +88,7 @@ func TestTreeManifestDoesNotReadStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	report, err := e.TreeManifest(m)
-	if err != nil || report.Change != m.Tag {
+	if err != nil || report.WorkspaceID != m.WorkspaceID {
 		t.Fatalf("loaded manifest inspection failed: %+v %v", report, err)
 	}
 }

@@ -29,7 +29,7 @@ type TreeReport struct {
 	Manifest     *Manifest `json:"-"`
 	Workspace    string
 	Context      string
-	Change       string
+	WorkspaceID  string
 	Repositories []TreeRepository
 }
 
@@ -194,8 +194,8 @@ func (e *Engine) TreeManifest(manifest *Manifest) (TreeReport, error) {
 	report := TreeReport{Manifest: manifest, Workspace: e.Root, Context: "base"}
 	if inChange {
 		report.Workspace = manifest.Workspace
-		report.Context = "change"
-		report.Change = workspaceSelector(manifest)
+		report.Context = "workspace"
+		report.WorkspaceID = workspaceSelector(manifest)
 	}
 
 	selected := map[string]RepoState{}

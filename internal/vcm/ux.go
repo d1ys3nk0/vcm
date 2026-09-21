@@ -81,7 +81,7 @@ func (e *Engine) Path(selector, context string, base bool) (string, error) {
 			return "", err
 		}
 		if len(m.Repositories) == 0 || m.Repositories[0].Removed || !m.Repositories[0].Owned {
-			return "", fmt.Errorf("Change checkout is removed or not yet created")
+			return "", fmt.Errorf("managed workspace checkout is removed or not yet created")
 		}
 		if err := e.owned(m, &m.Repositories[0]); err != nil {
 			return "", err
@@ -99,7 +99,7 @@ func (e *Engine) Path(selector, context string, base bool) (string, error) {
 }
 
 type RecoveryResult struct {
-	Change       string `json:"change"`
+	WorkspaceID  string `json:"workspace_id"`
 	Hook         string `json:"hook"`
 	DryRun       bool   `json:"dry_run"`
 	RetryCommand string `json:"retry_command"`
@@ -114,9 +114,9 @@ func (e *Engine) Recover(selector, context, key string, acknowledged bool) (Reco
 			return err
 		}
 		if m.Version < 4 {
-			return fmt.Errorf("legacy interrupted Change must finish with previous VCM binary")
+			return fmt.Errorf("legacy interrupted workspace must finish with previous VCM binary")
 		}
-		result.Change = workspaceSelector(m)
+		result.WorkspaceID = workspaceSelector(m)
 		parts := strings.Split(key, "/")
 		if len(parts) != 3 || m.Hooks[key].Status != "running" {
 			return failure("interruption", "", fmt.Errorf("retry-hook must identify an exact recorded running hook"))
@@ -303,5 +303,5 @@ func (e *PublicationError) Error() string { return e.Err.Error() }
 func (e *PublicationError) Unwrap() error { return e.Err }
 
 func legacyCreationError(tag string) error {
-	return failure("interruption", "", fmt.Errorf("Change %s has unfinished legacy creation; use the previous VCM binary to finish or discard it", tag))
+	return failure("interruption", "", fmt.Errorf("legacy workspace %s has unfinished creation; use the previous VCM binary to finish or discard it", tag))
 }

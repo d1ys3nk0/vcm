@@ -93,7 +93,7 @@ func (e *Engine) ConfigurationDrift(m *Manifest) []string {
 func (e *Engine) requireConfiguration(m *Manifest) error {
 	if m.Version < 4 {
 		if m.State != "ready" && m.State != "dropped" {
-			return fmt.Errorf("legacy interrupted Change %s must be completed with the previous VCM binary", m.Tag)
+			return fmt.Errorf("legacy interrupted workspace %s must be completed with the previous VCM binary", m.Tag)
 		}
 	}
 	if changes := e.ConfigurationDrift(m); len(changes) > 0 {
@@ -103,10 +103,10 @@ func (e *Engine) requireConfiguration(m *Manifest) error {
 }
 
 type ConfigurationAdoption struct {
-	Change       string   `json:"change"`
-	DryRun       bool     `json:"dry_run"`
-	Changes      []string `json:"changes"`
-	RetryCommand string   `json:"retry_command,omitempty"`
+	WorkspaceID        string   `json:"workspace_id"`
+	DryRun             bool     `json:"dry_run"`
+	ConfigurationDrift []string `json:"configuration_drift"`
+	RetryCommand       string   `json:"retry_command,omitempty"`
 }
 
 func (e *Engine) AdoptConfiguration(selector, context string) (ConfigurationAdoption, error) {
@@ -116,10 +116,10 @@ func (e *Engine) AdoptConfiguration(selector, context string) (ConfigurationAdop
 		if err != nil {
 			return err
 		}
-		result.Change = workspaceSelector(m)
-		result.Changes = e.ConfigurationDrift(m)
+		result.WorkspaceID = workspaceSelector(m)
+		result.ConfigurationDrift = e.ConfigurationDrift(m)
 		if m.Version < 4 && m.State != "ready" {
-			return fmt.Errorf("legacy interrupted Change must finish with previous VCM binary before adoption")
+			return fmt.Errorf("legacy interrupted workspace must finish with previous VCM binary before adoption")
 		}
 		if len(m.Missing) > 0 {
 			return fmt.Errorf("restore missing selected repositories before adoption")
@@ -276,10 +276,10 @@ func (e *Engine) AdoptConfiguration(selector, context string) (ConfigurationAdop
 					}
 				}
 				if resetForRefresh {
-					result.Changes = append(result.Changes, "canonical baselines advanced; refresh then retry merge")
+					result.ConfigurationDrift = append(result.ConfigurationDrift, "canonical baselines advanced; refresh then retry merge")
 					result.RetryCommand = "vcm refresh " + workspaceSelector(m) + " --workspace " + quoteArgument(m.Origin)
 				} else {
-					result.Changes = append(result.Changes, "source revisions changed; retry merge with new verification generation")
+					result.ConfigurationDrift = append(result.ConfigurationDrift, "source revisions changed; retry merge with new verification generation")
 					result.RetryCommand = "vcm merge " + workspaceSelector(m) + " --workspace " + quoteArgument(m.Origin)
 				}
 				for key, outcome := range m.Hooks {
@@ -319,7 +319,7 @@ func (e *Engine) AdoptConfiguration(selector, context string) (ConfigurationAdop
 			}
 			delete(m.Hooks, key)
 		}
-		m.Version = 4
+		m.Version = 5
 		m.Recorded = next
 		return e.store.save(m)
 	}

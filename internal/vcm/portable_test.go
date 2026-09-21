@@ -43,7 +43,7 @@ func TestPublishAndSnapshotRoundTrip(t *testing.T) {
 		if i > 0 {
 			origin = filepath.Join(root, e.Config.Children[0].Path)
 		}
-		mustGit(t, origin, "fetch", remote, "refs/heads/"+m.Tag)
+		mustGit(t, origin, "fetch", remote, "refs/heads/"+m.Name)
 	}
 	other, err := Open(root, io.Discard)
 	if err != nil {
@@ -54,7 +54,7 @@ func TestPublishAndSnapshotRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, r := range s.Repositories {
-		if r.PublicationRef != "refs/heads/"+m.Tag {
+		if r.PublicationRef != "refs/heads/"+m.Name {
 			t.Fatal("missing publication ref")
 		}
 	}
@@ -62,7 +62,7 @@ func TestPublishAndSnapshotRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if restored.Tag == m.Tag {
+	if restored.WorkspaceID == m.WorkspaceID {
 		t.Fatal("identity reused")
 	}
 	for i, r := range restored.Repositories {
@@ -114,7 +114,7 @@ func TestPublishPreflightsAllAndDryRunDoesNotContactRemote(t *testing.T) {
 	if err = e.Publish(m); err == nil {
 		t.Fatal("dirty publication accepted")
 	}
-	if got := mustGit(t, e.Root, "ls-remote", m.Repositories[1].Repository.URL, "refs/heads/"+m.Tag); got != "" {
+	if got := mustGit(t, e.Root, "ls-remote", m.Repositories[1].Repository.URL, "refs/heads/"+m.Name); got != "" {
 		t.Fatal("child published before complete preflight")
 	}
 	mustGit(t, m.Repositories[1].Path, "remote", "set-url", "--push", "origin", "/missing/remote")
@@ -136,7 +136,7 @@ func TestRestoreResumesJournalWithoutHooks(t *testing.T) {
 	saveContractConfig(t, e)
 	mustGit(t, e.Root, "remote", "set-url", "origin", "https://example.test/root.git")
 	sha := mustGit(t, e.Root, "rev-parse", "HEAD")
-	s := &Snapshot{Version: 1, Tag: newTag("original"), Repositories: []SnapshotRepository{{Name: "root", Path: ".", URL: "https://example.test/root.git", Trunk: "main", Base: sha, Source: sha}}}
+	s := &Snapshot{Version: 2, WorkspaceName: "original", Repositories: []SnapshotRepository{{Name: "root", Path: ".", URL: "https://example.test/root.git", Trunk: "main", Base: sha, Source: sha}}}
 	m, err := e.snapshotManifest(s, "resumed")
 	if err != nil {
 		t.Fatal(err)
@@ -145,7 +145,7 @@ func TestRestoreResumesJournalWithoutHooks(t *testing.T) {
 	if err = e.store.save(m); err != nil {
 		t.Fatal(err)
 	}
-	mustGit(t, e.Root, "worktree", "add", "-b", m.Tag, m.Workspace, sha)
+	mustGit(t, e.Root, "worktree", "add", "-b", m.Name, m.Workspace, sha)
 	marker := filepath.Join(t.TempDir(), "hook-ran")
 	hooks := mustGit(t, e.Root, "rev-parse", "--git-path", "hooks")
 	if !filepath.IsAbs(hooks) {
@@ -157,14 +157,14 @@ func TestRestoreResumesJournalWithoutHooks(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := e.RestorePlan(s, "resumed", false)
-	if p.Tag != m.Tag || len(p.Blockers) > 0 {
+	if p.WorkspaceID != m.WorkspaceID || len(p.Blockers) > 0 {
 		t.Fatalf("resume preview: %+v", p)
 	}
 	restored, err := e.Restore(s, "resumed", false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if restored.Tag != m.Tag || restored.State != "ready" {
+	if restored.WorkspaceID != m.WorkspaceID || restored.State != "ready" {
 		t.Fatal("journal not resumed")
 	}
 	if _, err = os.Stat(marker); !os.IsNotExist(err) {
@@ -186,7 +186,7 @@ func TestRestorePreviewRejectsNonCommitWithFetch(t *testing.T) {
 	e := fixture(t, 0)
 	mustGit(t, e.Root, "remote", "set-url", "origin", "https://example.test/root.git")
 	sha := mustGit(t, e.Root, "rev-parse", "HEAD^{tree}")
-	s := &Snapshot{Version: 1, Tag: newTag("original"), Repositories: []SnapshotRepository{{Name: "root", Path: ".", URL: "https://example.test/root.git", Trunk: "main", Base: sha, Source: sha}}}
+	s := &Snapshot{Version: 2, WorkspaceName: "original", Repositories: []SnapshotRepository{{Name: "root", Path: ".", URL: "https://example.test/root.git", Trunk: "main", Base: sha, Source: sha}}}
 	p := e.RestorePlan(s, "invalid", true)
 	if len(p.Blockers) == 0 {
 		t.Fatal("non-commit treated as remotely verifiable")
@@ -282,7 +282,7 @@ func TestPublishRejectsDriftBeforeNextRepository(t *testing.T) {
 	if !ok || pe.Blocked != "root" || len(pe.Completed) != 1 {
 		t.Fatalf("wrong drift error: %#v", err)
 	}
-	if got := mustGit(t, e.Root, "ls-remote", m.Repositories[0].Repository.URL, "refs/heads/"+m.Tag); got != "" {
+	if got := mustGit(t, e.Root, "ls-remote", m.Repositories[0].Repository.URL, "refs/heads/"+m.Name); got != "" {
 		t.Fatal("drifted root published")
 	}
 }
@@ -297,18 +297,18 @@ func TestPublishRejectsDivergentRemoteBeforePublishing(t *testing.T) {
 		t.Fatal(err)
 	}
 	clone := filepath.Join(t.TempDir(), "remote-work")
-	mustGit(t, e.Root, "clone", "--branch", m.Tag, m.Repositories[1].Repository.URL, clone)
+	mustGit(t, e.Root, "clone", "--branch", m.Name, m.Repositories[1].Repository.URL, clone)
 	commitFile(t, clone, "remote.txt", "remote work")
-	mustGit(t, clone, "push", "origin", m.Tag)
+	mustGit(t, clone, "push", "origin", m.Name)
 	commitFile(t, m.Repositories[1].Path, "local.txt", "local work")
 	commitFile(t, m.Workspace, "local.txt", "root work")
-	rootBefore := mustGit(t, e.Root, "ls-remote", m.Repositories[0].Repository.URL, "refs/heads/"+m.Tag)
+	rootBefore := mustGit(t, e.Root, "ls-remote", m.Repositories[0].Repository.URL, "refs/heads/"+m.Name)
 	err = e.Publish(m)
 	pe, ok := err.(*PublicationError)
 	if !ok || pe.Blocked != "repo0" || len(pe.Completed) != 0 {
 		t.Fatalf("wrong divergence error: %#v", err)
 	}
-	if got := mustGit(t, e.Root, "ls-remote", m.Repositories[0].Repository.URL, "refs/heads/"+m.Tag); got != rootBefore {
+	if got := mustGit(t, e.Root, "ls-remote", m.Repositories[0].Repository.URL, "refs/heads/"+m.Name); got != rootBefore {
 		t.Fatal("root published before preflight completed")
 	}
 }

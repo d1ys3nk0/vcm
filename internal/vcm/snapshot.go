@@ -11,9 +11,9 @@ import (
 
 // Snapshot is portable revision data, never executable configuration.
 type Snapshot struct {
-	Version      int                  `json:"version"`
-	Tag          string               `json:"tag"`
-	Repositories []SnapshotRepository `json:"repositories"`
+	Version       int                  `json:"version"`
+	WorkspaceName string               `json:"workspace_name"`
+	Repositories  []SnapshotRepository `json:"repositories"`
 }
 type SnapshotRepository struct {
 	Name           string `json:"name"`
@@ -47,12 +47,12 @@ func portableURL(raw string) string {
 }
 func (e *Engine) Export(m *Manifest) (*Snapshot, error) {
 	if m.State != "ready" {
-		return nil, fmt.Errorf("Change must be ready to export")
+		return nil, fmt.Errorf("managed workspace must be ready to export")
 	}
 	if err := e.ensureCurrentSelection(m); err != nil {
 		return nil, err
 	}
-	s := &Snapshot{Version: 1, Tag: workspaceName(m), Repositories: []SnapshotRepository{}}
+	s := &Snapshot{Version: 2, WorkspaceName: workspaceName(m), Repositories: []SnapshotRepository{}}
 	for i := range m.Repositories {
 		r := &m.Repositories[i]
 		p := changePublication{state: r}
@@ -75,14 +75,14 @@ func (e *Engine) Export(m *Manifest) (*Snapshot, error) {
 	return s, nil
 }
 func (e *Engine) snapshotManifest(s *Snapshot, name string) (*Manifest, error) {
-	if s == nil || s.Version != 1 {
+	if s == nil || s.Version != 2 {
 		return nil, fmt.Errorf("unsupported snapshot version")
 	}
-	if err := validateIdentity(s.Tag); err != nil {
-		return nil, err
+	if !validBranch(s.WorkspaceName) {
+		return nil, fmt.Errorf("snapshot has an invalid workspace name")
 	}
-	if !slugPattern.MatchString(name) {
-		return nil, fmt.Errorf("name must use lowercase kebab-case with digits")
+	if !validBranch(name) {
+		return nil, fmt.Errorf("workspace name must be a valid Git branch")
 	}
 	names := []string{}
 	seen := map[string]bool{}
@@ -128,7 +128,6 @@ func (e *Engine) snapshotManifest(s *Snapshot, name string) (*Manifest, error) {
 			}
 		}
 	}
-	m.Version = 4
 	m.State = "restoring"
 	m.RestoreSnapshot = s
 	m.Recorded = e.recordConfiguration(m)
@@ -145,7 +144,7 @@ func (e *Engine) restoreObjects(m *Manifest, fetch bool) error {
 			if err != nil && fetch {
 				fetchRef := sha
 				for _, sr := range m.RestoreSnapshot.Repositories {
-					if sr.Name == r.Repository.Name && sr.PublicationRef == "refs/heads/"+m.RestoreSnapshot.Tag {
+					if sr.Name == r.Repository.Name && sr.PublicationRef == "refs/heads/"+m.RestoreSnapshot.WorkspaceName {
 						fetchRef = sr.PublicationRef
 					}
 				}
@@ -209,9 +208,9 @@ func (e *Engine) resolveRestore(m *Manifest, s *Snapshot, name string) (*Manifes
 		return nil, false, err
 	}
 	for _, existing := range all {
-		if existing.Slug == name && existing.State != "dropped" {
+		if existing.Version == 5 && existing.Name == name && existing.State != "dropped" {
 			if existing.State != "restoring" || !reflect.DeepEqual(existing.RestoreSnapshot, s) {
-				return nil, false, fmt.Errorf("active Change already exists: %s", existing.Tag)
+				return nil, false, fmt.Errorf("active managed workspace already exists: %s", existing.WorkspaceID)
 			}
 			return existing, false, nil
 		}
@@ -284,7 +283,7 @@ func (e *Engine) RestorePlan(s *Snapshot, name string, fetch bool) OperationPlan
 	if err = e.ensureCurrentSelection(m); err != nil {
 		p.Blockers = append(p.Blockers, err.Error())
 	}
-	p.Tag = workspaceName(m)
+	p.WorkspaceID = workspaceSelector(m)
 	p.Workspace = m.Workspace
 	if fetch {
 		p.Unverified = append(p.Unverified, "remote availability and missing snapshot objects")

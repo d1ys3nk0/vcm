@@ -45,8 +45,8 @@ type overviewEntry struct {
 	Inspection []treeRepositoryResult `json:"repositories"`
 }
 type overviewResult struct {
-	Changes []overviewEntry `json:"changes"`
-	verbose bool
+	Workspaces []overviewEntry `json:"workspaces"`
+	verbose    bool
 }
 
 func inspectStatus(e *vcm.Engine, selector, context string, verbose bool) (inspectionResult, error) {
@@ -71,7 +71,7 @@ func inspectStatus(e *vcm.Engine, selector, context string, verbose bool) (inspe
 		return result, err
 	}
 	result.treeResult = newTreeResult(report)
-	if report.Context == "change" {
+	if report.Context == "workspace" {
 		if m == nil {
 			m = report.Manifest
 		}
@@ -110,14 +110,14 @@ func operationLabel(m *vcm.Manifest) string {
 	}
 }
 func inspectList(e *vcm.Engine, context string, all, verbose bool) (overviewResult, error) {
-	result := overviewResult{Changes: []overviewEntry{}, verbose: verbose}
+	result := overviewResult{Workspaces: []overviewEntry{}, verbose: verbose}
 	manifests, err := e.All()
 	if err != nil {
 		return result, err
 	}
 	lookup := map[string]*vcm.Manifest{}
 	for _, m := range manifests {
-		lookup[m.WorkspaceID] = m
+		lookup[workspaceIdentity(m)] = m
 	}
 	if absolute, err := filepath.Abs(context); err == nil {
 		context = absolute
@@ -153,7 +153,7 @@ func inspectList(e *vcm.Engine, context string, all, verbose bool) (overviewResu
 		} else {
 			entry.Dirty = &dirty
 		}
-		result.Changes = append(result.Changes, entry)
+		result.Workspaces = append(result.Workspaces, entry)
 	}
 	return result, nil
 }
@@ -247,19 +247,19 @@ func humanLifecycle(state vcm.Lifecycle) string {
 	return string(state)
 }
 func renderOverview(out io.Writer, v overviewResult, style humanStyle) error {
-	if len(v.Changes) == 0 {
-		_, err := fmt.Fprintln(out, "No Changes.")
+	if len(v.Workspaces) == 0 {
+		_, err := fmt.Fprintln(out, "No managed workspaces.")
 		return err
 	}
 	counts := map[string]int{}
-	for _, c := range v.Changes {
+	for _, c := range v.Workspaces {
 		for _, change := range c.ConfigurationDrift {
 			fmt.Fprintf(out, "Configuration %s: %s\n", c.WorkspaceID, change)
 		}
 		counts[c.Name]++
 	}
 	rows := [][]string{tableHeader(style, "", "Workspace", "Repos", "Dirty", "Base update", "Operation", "Age")}
-	for _, c := range v.Changes {
+	for _, c := range v.Workspaces {
 		marker := ""
 		if c.current {
 			marker = "@"
@@ -287,7 +287,7 @@ type operationError struct {
 	Code         string          `json:"code"`
 	Message      string          `json:"message"`
 	Repository   string          `json:"repository,omitempty"`
-	Change       string          `json:"change,omitempty"`
+	WorkspaceID  string          `json:"workspace_id,omitempty"`
 	Command      string          `json:"command,omitempty"`
 	Progress     []progressEntry `json:"progress,omitempty"`
 	NextAction   string          `json:"next_action,omitempty"`
@@ -318,7 +318,7 @@ func operationFailure(command string, m *vcm.Manifest, err error) error {
 		result.NextAction = "Inspect the reported remote failure and rerun vcm " + command + "; completed publications are not rolled back."
 	}
 	if m != nil {
-		result.Change = workspaceIdentity(m)
+		result.WorkspaceID = workspaceIdentity(m)
 		if command == "merge" || command == "cleanup" {
 			result.Finalization = "pending"
 			if m.State == "merge-finalizing" {

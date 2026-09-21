@@ -62,10 +62,10 @@ func TestAdoptPendingAndFailedMergeHooksWithoutExecution(t *testing.T) {
 			t.Setenv("VCM_ADOPTION_MARKER", marker)
 			e.Config.Root.Hooks[HookMergeBefore][0].Shell = `touch "$VCM_ADOPTION_MARKER"`
 			e = adoptionLocalConfig(t, e)
-			if _, err = e.AdoptConfiguration(m.Tag, e.Root); err != nil {
+			if _, err = e.AdoptConfiguration(m.WorkspaceID, e.Root); err != nil {
 				t.Fatal(err)
 			}
-			loaded, err := e.Select(m.Tag, e.Root)
+			loaded, err := e.Select(m.WorkspaceID, e.Root)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -96,16 +96,16 @@ func TestAdoptRemovedRunningHookRequiresAcknowledgment(t *testing.T) {
 	adoptionCheckpoint(t, e, m)
 	e.Config.Root.Hooks = nil
 	e = adoptionLocalConfig(t, e)
-	if _, err = e.AdoptConfiguration(m.Tag, e.Root); err == nil {
+	if _, err = e.AdoptConfiguration(m.WorkspaceID, e.Root); err == nil {
 		t.Fatal("adopted running hook removal without acknowledgment")
 	}
-	if _, err = e.Recover(m.Tag, e.Root, key, false); err == nil {
+	if _, err = e.Recover(m.WorkspaceID, e.Root, key, false); err == nil {
 		t.Fatal("retry accepted without effects acknowledgment")
 	}
-	if _, err = e.Recover(m.Tag, e.Root, key, true); err != nil {
+	if _, err = e.Recover(m.WorkspaceID, e.Root, key, true); err != nil {
 		t.Fatalf("cannot acknowledge removed running hook from recorded definition: %v", err)
 	}
-	if _, err = e.AdoptConfiguration(m.Tag, e.Root); err != nil {
+	if _, err = e.AdoptConfiguration(m.WorkspaceID, e.Root); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -132,7 +132,7 @@ func TestAdoptCompletedGateRejectsDownstreamEffects(t *testing.T) {
 			adoptionCheckpoint(t, e, m)
 			e.Config.Root.Hooks[HookMergeBefore][0].Shell = "echo changed"
 			e = adoptionLocalConfig(t, e)
-			if _, err = e.AdoptConfiguration(m.Tag, e.Root); err == nil || !strings.Contains(err.Error(), "downstream") {
+			if _, err = e.AdoptConfiguration(m.WorkspaceID, e.Root); err == nil || !strings.Contains(err.Error(), "downstream") {
 				t.Fatalf("downstream adoption: %v", err)
 			}
 		})
@@ -155,10 +155,10 @@ func TestAdoptChangedRootGateInvalidatesLaterChildGates(t *testing.T) {
 	adoptionCheckpoint(t, e, m)
 	e.Config.Root.Hooks[HookMergeBefore][0].Shell = "echo changed"
 	e = adoptionLocalConfig(t, e)
-	if _, err = e.AdoptConfiguration(m.Tag, e.Root); err != nil {
+	if _, err = e.AdoptConfiguration(m.WorkspaceID, e.Root); err != nil {
 		t.Fatal(err)
 	}
-	m, err = e.Select(m.Tag, e.Root)
+	m, err = e.Select(m.WorkspaceID, e.Root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,10 +183,10 @@ func TestAdoptPythonRunnerChangePreservesShellOnlyPhase(t *testing.T) {
 	adoptionCheckpoint(t, e, m)
 	e.Config.Runners.Python = "python3"
 	e = adoptionLocalConfig(t, e)
-	if _, err = e.AdoptConfiguration(m.Tag, e.Root); err != nil {
+	if _, err = e.AdoptConfiguration(m.WorkspaceID, e.Root); err != nil {
 		t.Fatal(err)
 	}
-	m, err = e.Select(m.Tag, e.Root)
+	m, err = e.Select(m.WorkspaceID, e.Root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,10 +228,10 @@ func TestAdoptFailedLaterGatePreservesCompletedPrefix(t *testing.T) {
 				e.Config.Root.Hooks[HookMergeBefore][1].Shell = changed
 			}
 			e = adoptionLocalConfig(t, e)
-			if _, err = e.AdoptConfiguration(m.Tag, e.Root); err != nil {
+			if _, err = e.AdoptConfiguration(m.WorkspaceID, e.Root); err != nil {
 				t.Fatal(err)
 			}
-			m, err = e.Select(m.Tag, e.Root)
+			m, err = e.Select(m.WorkspaceID, e.Root)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -266,10 +266,10 @@ func TestAdoptCommittedConfigRepairAllowsRefreshAndMerge(t *testing.T) {
 	}
 	e.Config.Children[0].Hooks[HookMergeBefore][0].Shell = `echo repaired >> "$VCM_ADOPTION_EVENTS"`
 	e = adoptionEngine(t, e)
-	if _, err = e.AdoptConfiguration(m.Tag, e.Root); err != nil {
+	if _, err = e.AdoptConfiguration(m.WorkspaceID, e.Root); err != nil {
 		t.Fatal(err)
 	}
-	m, err = e.Select(m.Tag, e.Root)
+	m, err = e.Select(m.WorkspaceID, e.Root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -308,10 +308,10 @@ func TestAdoptFailedHookCommittedSourceCanRetryMerge(t *testing.T) {
 	}
 	e.Config.Root.Hooks[HookMergeBefore][0].Shell = `echo repaired >> "$VCM_ADOPTION_EVENTS"`
 	e = adoptionLocalConfig(t, e)
-	if _, err = e.AdoptConfiguration(m.Tag, e.Root); err != nil {
+	if _, err = e.AdoptConfiguration(m.WorkspaceID, e.Root); err != nil {
 		t.Fatal(err)
 	}
-	m, err = e.Select(m.Tag, e.Root)
+	m, err = e.Select(m.WorkspaceID, e.Root)
 	if err != nil {
 		t.Fatal(err)
 	}

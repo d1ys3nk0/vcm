@@ -158,7 +158,7 @@ func TestRecoveryContractPendingSourceDrift(t *testing.T) {
 	changed := m.Repositories[2]
 	commitFile(t, changed.Path, "later.txt", "not reviewed\n")
 	put(t, allow, "allowed")
-	m, err = e.store.load(m.Tag)
+	m, err = e.store.load(m.WorkspaceID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,7 +238,7 @@ func TestRecoveryContractRootRefCompletedWithNestedCheckouts(t *testing.T) {
 	mustGit(t, r.Origin, "read-tree", "-u", "-m", r.TargetBefore, r.MergeCommit)
 	mustGit(t, r.Origin, "update-ref", "refs/heads/"+r.Repository.Trunk, r.MergeCommit, r.TargetBefore)
 	expected := r.MergeCommit
-	m, err = e.store.load(m.Tag)
+	m, err = e.store.load(m.WorkspaceID)
 	if err != nil {
 		t.Fatal(err)
 	}

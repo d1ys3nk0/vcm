@@ -77,7 +77,7 @@ func TestMergePreservesIgnoredOriginCollisions(t *testing.T) {
 				if mustGit(t, e.Root, "rev-parse", "HEAD") != before || mustGit(t, e.Root, "write-tree") != index {
 					t.Fatal("merge changed origin ref or index")
 				}
-				m, err = e.store.load(m.Tag)
+				m, err = e.store.load(m.WorkspaceID)
 				if err != nil {
 					t.Fatal(err)
 				}

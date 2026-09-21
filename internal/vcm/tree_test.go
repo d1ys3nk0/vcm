@@ -36,7 +36,7 @@ func TestTreeBaseCountsUniqueTrackedAndIndividualUntrackedFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Context != "base" || report.Change != "" || len(report.Repositories) != 2 || report.Repositories[0].Name != "root" || report.Repositories[1].Name != "repo0" {
+	if report.Context != "base" || report.WorkspaceID != "" || len(report.Repositories) != 2 || report.Repositories[0].Name != "root" || report.Repositories[1].Name != "repo0" {
 		t.Fatalf("unexpected base tree inventory: %+v", report)
 	}
 	root := treeRepository(t, report, "root")
@@ -91,7 +91,7 @@ func TestTreeChangeUsesLocalTrunksAndKeepsPartialRepositoriesUnavailable(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Context != "change" || report.Change != manifest.Tag || len(report.Repositories) != 2 {
+	if report.Context != "workspace" || report.WorkspaceID != manifest.WorkspaceID || len(report.Repositories) != 2 {
 		t.Fatalf("unexpected Change inventory: %+v", report)
 	}
 	root := treeRepository(t, report, "root")

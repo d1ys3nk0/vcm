@@ -86,7 +86,7 @@ type OperationPlan struct {
 	DeletesIgnoredContent bool
 	SkippedHookPhases     []string
 	SkipHookGitHooks      bool
-	Tag                   string
+	WorkspaceID           string
 	Workspace             string
 	Resources             []string
 }
@@ -125,6 +125,12 @@ func (e *Engine) Select(selector, cwd string) (selected *Manifest, selectionErr 
 	if !implicit {
 		for _, m := range all {
 			if m.Version == 5 && m.WorkspaceID == selector {
+				return m, nil
+			}
+			if m.Version < 5 && m.Tag == selector {
+				if m.State != StateDropped {
+					return nil, fmt.Errorf("legacy workspace %s must finish with the previous VCM binary", m.Tag)
+				}
 				return m, nil
 			}
 		}
@@ -308,8 +314,8 @@ func (e *Engine) Fetch() error {
 	}
 	return nil
 }
-func (e *Engine) Create(slug string) (*Manifest, error) {
-	return e.CreateSelected(slug, "", "")
+func (e *Engine) Create(name string) (*Manifest, error) {
+	return e.CreateSelected(name, "", "")
 }
 
 func parseSelectionList(flag, value string) ([]string, error) {
@@ -399,6 +405,9 @@ func sameSelection(m *Manifest, selected []Repository) bool {
 }
 
 func (e *Engine) ensureCurrentSelection(m *Manifest) error {
+	if m.Version < 5 {
+		return fmt.Errorf("completed legacy workspace %s is read-only", m.Tag)
+	}
 	if len(m.Missing) > 0 {
 		return fmt.Errorf("selected repository %s is absent from current configuration; restore its vcm.yml entry before retrying", strings.Join(m.Missing, ", "))
 	}
@@ -419,8 +428,8 @@ func (e *Engine) ensureCurrentSelection(m *Manifest) error {
 	return nil
 }
 
-func (e *Engine) CreateSelected(slug, only, except string) (*Manifest, error) {
-	if !validBranch(slug) {
+func (e *Engine) CreateSelected(name, only, except string) (*Manifest, error) {
+	if !validBranch(name) {
 		return nil, fmt.Errorf("workspace name must be a valid Git branch")
 	}
 	selected, err := e.selectedRepositories(only, except)
@@ -432,7 +441,7 @@ func (e *Engine) CreateSelected(slug, only, except string) (*Manifest, error) {
 		return nil, err
 	}
 	for _, m := range all {
-		if m.Version == 5 && m.Name == slug && m.State == "creating" {
+		if m.Version == 5 && m.Name == name && m.State == "creating" {
 			if m.Version < 3 {
 				return m, legacyCreationError(m.Tag)
 			}
@@ -440,11 +449,11 @@ func (e *Engine) CreateSelected(slug, only, except string) (*Manifest, error) {
 				return m, err
 			}
 			if !sameSelection(m, selected) {
-				return m, fmt.Errorf("create selection does not match the interrupted Change; retry with the originally selected repositories")
+				return m, fmt.Errorf("create selection does not match the interrupted managed workspace; retry with the originally selected repositories")
 			}
 			return m, e.resumeCreate(m)
 		}
-		if m.Version == 5 && m.Name == slug && m.State != "dropped" {
+		if m.Version == 5 && m.Name == name && m.State != "dropped" {
 			return nil, fmt.Errorf("active workspace already exists with name %s", m.Name)
 		}
 	}
@@ -457,7 +466,7 @@ func (e *Engine) CreateSelected(slug, only, except string) (*Manifest, error) {
 	if err != nil {
 		return nil, err
 	}
-	m := &Manifest{Version: 5, WorkspaceID: workspaceID, Name: slug, CreatedAt: time.Now().UTC(), RootOrigin: e.Root, RootCustody: "vcm", Workspace: path, Origin: e.Root, Config: e.Config, State: "creating", Hooks: map[string]HookState{}}
+	m := &Manifest{Version: 5, WorkspaceID: workspaceID, Name: name, CreatedAt: time.Now().UTC(), RootOrigin: e.Root, RootCustody: "vcm", Workspace: path, Origin: e.Root, Config: e.Config, State: "creating", Hooks: map[string]HookState{}}
 	m.Repositories = append(m.Repositories, RepoState{Repository: Repository{Name: "root", URL: rootURL, Trunk: e.Config.Root.Trunk, Hooks: e.Config.Root.Hooks}, Origin: e.Root, Path: path, CheckoutCustody: "vcm", BranchCustody: "vcm"})
 	for _, r := range selected {
 		m.Repositories = append(m.Repositories, RepoState{Repository: r, Origin: filepath.Join(e.Root, r.Path), Path: filepath.Join(path, r.Path), CheckoutCustody: "vcm", BranchCustody: "vcm"})
@@ -507,10 +516,27 @@ func (e *Engine) CreateExisting(name, rootPath, only, except string) (*Manifest,
 	if common != canonicalCommon {
 		return nil, fmt.Errorf("existing root must belong to the configured root repository")
 	}
+	all, err := e.All()
+	if err != nil {
+		return nil, err
+	}
+	for _, prior := range all {
+		if prior.Version == 5 && prior.Workspace == rootPath && prior.State != StateDropped {
+			if name != "" && name != prior.Name {
+				return nil, fmt.Errorf("existing root is already managed as %s with branch %q", prior.WorkspaceID, prior.Name)
+			}
+			if !sameSelection(prior, selected) {
+				return nil, fmt.Errorf("create selection does not match the interrupted managed workspace; retry with the originally selected repositories")
+			}
+			return prior, e.resumeCreate(prior)
+		}
+	}
+	// Capture both values before hooks can advance the canonical trunk.
 	initial, err := head(rootPath)
 	if err != nil {
 		return nil, err
 	}
+	createdAt := time.Now().UTC()
 	baseline, err := localBaseline(&RepoState{Repository: Repository{Name: "root", Trunk: e.Config.Root.Trunk}, Origin: e.Root})
 	if err != nil {
 		return nil, err
@@ -536,21 +562,9 @@ func (e *Engine) CreateExisting(name, rootPath, only, except string) (*Manifest,
 		if _, err := git(e.Root, "show-ref", "--verify", "refs/heads/"+name); err == nil {
 			return nil, fmt.Errorf("generated workspace name %q collides; retry with vcm create <name> --existing-root %s", name, rootPath)
 		}
-		if _, err := git(rootPath, "checkout", "-b", name, initial); err != nil {
-			return nil, fmt.Errorf("attach existing root branch: %w", err)
-		}
 	}
 	if !validBranch(name) {
 		return nil, fmt.Errorf("workspace name must be a valid Git branch")
-	}
-	all, err := e.All()
-	if err != nil {
-		return nil, err
-	}
-	for _, prior := range all {
-		if prior.Version == 5 && prior.Workspace == rootPath && prior.State != StateDropped {
-			return prior, e.resumeCreate(prior)
-		}
 	}
 	workspaceID, err := WorkspaceID()
 	if err != nil {
@@ -560,7 +574,7 @@ func (e *Engine) CreateExisting(name, rootPath, only, except string) (*Manifest,
 	if err != nil {
 		return nil, err
 	}
-	m := &Manifest{Version: 5, WorkspaceID: workspaceID, Name: name, CreatedAt: time.Now().UTC(), RootOrigin: e.Root, RootCustody: "external", Workspace: rootPath, Origin: e.Root, Config: e.Config, State: StateCreating, Hooks: map[string]HookState{}}
+	m := &Manifest{Version: 5, WorkspaceID: workspaceID, Name: name, CreatedAt: createdAt, RootOrigin: e.Root, RootCustody: "external", Workspace: rootPath, Origin: e.Root, Config: e.Config, State: StateCreating, Hooks: map[string]HookState{}}
 	m.Repositories = append(m.Repositories, RepoState{Repository: Repository{Name: "root", URL: rootURL, Trunk: e.Config.Root.Trunk, Hooks: e.Config.Root.Hooks}, Origin: e.Root, Path: rootPath, Base: initial, Owned: true, CheckoutCustody: "external", BranchCustody: branchCustody})
 	for _, r := range selected {
 		m.Repositories = append(m.Repositories, RepoState{Repository: r, Origin: filepath.Join(e.Root, r.Path), Path: filepath.Join(rootPath, r.Path), CheckoutCustody: "vcm", BranchCustody: "vcm"})
@@ -573,6 +587,38 @@ func (e *Engine) CreateExisting(name, rootPath, only, except string) (*Manifest,
 		return nil, err
 	}
 	return m, e.resumeCreate(m)
+}
+
+// ensureExternalRootBranch completes the first durable side effect of adopting
+// a detached harness worktree. The manifest is saved before this function is
+// called, so a process failure can always be resumed by Workspace ID or path.
+func (e *Engine) ensureExternalRootBranch(m *Manifest, root *RepoState) error {
+	if root.CheckoutCustody != "external" || root.BranchCustody != "vcm" {
+		return nil
+	}
+	if _, err := os.Stat(root.Path); err != nil {
+		return fmt.Errorf("external root worktree disappeared before initialization completed; restore it at %s and retry", root.Path)
+	}
+	current, err := head(root.Path)
+	if err != nil {
+		return err
+	}
+	if current != root.Base {
+		return fmt.Errorf("external root revision changed before VCM attached branch %s", workspaceName(m))
+	}
+	if attached, branchErr := branch(root.Path); branchErr == nil {
+		if attached != workspaceName(m) {
+			return fmt.Errorf("external root is on branch %q; expected %q", attached, workspaceName(m))
+		}
+		return nil
+	}
+	if _, err := git(root.Origin, "show-ref", "--verify", "refs/heads/"+workspaceName(m)); err == nil {
+		return fmt.Errorf("workspace branch %q exists but is not attached to the recorded external root; remove the collision and retry", workspaceName(m))
+	}
+	if _, err := git(root.Path, "checkout", "-b", workspaceName(m), root.Base); err != nil {
+		return fmt.Errorf("attach existing root branch: %w", err)
+	}
+	return nil
 }
 
 func (e *Engine) preflightCreate(m *Manifest) error {
@@ -592,7 +638,7 @@ func (e *Engine) preflightCreate(m *Manifest) error {
 		}
 		if _, err := os.Lstat(r.Path); !os.IsNotExist(err) {
 			if i == 0 {
-				return fmt.Errorf("Change path collision: %s", r.Path)
+				return fmt.Errorf("managed workspace path collision: %s", r.Path)
 			}
 			return fmt.Errorf("repository %s: existing unowned path %s", r.Repository.Name, r.Path)
 		}
@@ -630,7 +676,8 @@ func (e *Engine) owned(m *Manifest, r *RepoState) (errOut error) {
 	if r.Repository.Name != "root" {
 		expected = filepath.Join(m.Workspace, r.Repository.Path)
 	}
-	if r.Path != expected || !isChangeWorkspace(e.Root, manifestKey(m), m.Workspace) || r.Origin != filepath.Join(e.Root, r.Repository.Path) {
+	workspaceMatches := m.RootCustody == "external" || isChangeWorkspace(e.Root, manifestKey(m), m.Workspace)
+	if r.Path != expected || !workspaceMatches || r.Origin != filepath.Join(e.Root, r.Repository.Path) {
 		return fmt.Errorf("repository %s: ownership paths mismatch", r.Repository.Name)
 	}
 	actual, err := filepath.EvalSymlinks(r.Path)
@@ -662,6 +709,10 @@ func (e *Engine) resumeCreate(m *Manifest) error {
 	if m.Version < 3 {
 		return legacyCreationError(m.Tag)
 	}
+	root := &m.Repositories[0]
+	if err := e.ensureExternalRootBranch(m, root); err != nil {
+		return err
+	}
 	// Record local baselines for all selected repositories before project hooks run.
 	for i := range m.Repositories {
 		r := &m.Repositories[i]
@@ -676,7 +727,6 @@ func (e *Engine) resumeCreate(m *Manifest) error {
 			}
 		}
 	}
-	root := &m.Repositories[0]
 	if !root.Owned || root.CheckoutCustody == "external" {
 		if err := e.hooksAt(m, root, HookCreateBefore, root.Origin, false); err != nil {
 			return err
@@ -1063,15 +1113,15 @@ func (e *Engine) Status(m *Manifest) StatusReport {
 	}
 	return StatusReport{Repositories: repos, RecoveryDirectory: filepath.Join(e.store.dir, "recovery"), PendingSync: e.pendingSync()}
 }
-func (e *Engine) CreatePlan(slug string) (OperationPlan, error) {
-	return e.CreatePlanSelected(slug, "", "")
+func (e *Engine) CreatePlan(name string) (OperationPlan, error) {
+	return e.CreatePlanSelected(name, "", "")
 }
 
-func (e *Engine) CreatePlanSelected(slug, only, except string) (OperationPlan, error) {
-	if !slugPattern.MatchString(slug) {
-		return OperationPlan{}, fmt.Errorf("slug must use lowercase kebab-case with digits")
+func (e *Engine) CreatePlanSelected(name, only, except string) (OperationPlan, error) {
+	if !validBranch(name) {
+		return OperationPlan{}, fmt.Errorf("workspace name must be a valid Git branch")
 	}
-	m, err := e.createPlanManifest(slug, only, except)
+	m, err := e.createPlanManifest(name, only, except)
 	if err != nil {
 		return OperationPlan{}, err
 	}
@@ -1085,16 +1135,16 @@ func (e *Engine) CreatePlanSelected(slug, only, except string) (OperationPlan, e
 		return OperationPlan{}, err
 	}
 	for _, existing := range all {
-		if existing.Slug != slug || existing.State == "dropped" {
+		if existing.Version != 5 || existing.Name != name || existing.State == "dropped" {
 			continue
 		}
 		if existing.State == "creating" {
 			m = existing
 			if !sameSelection(m, selected) {
-				blocker = "create selection does not match interrupted Change"
+				blocker = "create selection does not match interrupted managed workspace"
 			}
 		} else {
-			blocker = "active Change already exists: " + existing.Tag
+			blocker = "active managed workspace already exists: " + existing.WorkspaceID
 		}
 		break
 	}
@@ -1102,7 +1152,7 @@ func (e *Engine) CreatePlanSelected(slug, only, except string) (OperationPlan, e
 	for _, r := range m.Repositories {
 		resources = append(resources, r.Path)
 	}
-	plan := e.enrichPlan(OperationPlan{Command: "create", DryRun: true, Tag: m.Tag, Workspace: m.Workspace, Resources: resources}, m)
+	plan := e.enrichPlan(OperationPlan{Command: "create", DryRun: true, WorkspaceID: workspaceSelector(m), Workspace: m.Workspace, Resources: resources}, m)
 	if blocker != "" {
 		plan.Blockers = append(plan.Blockers, blocker)
 	}

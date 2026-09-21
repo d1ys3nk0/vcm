@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 func (e *Engine) enrichPlan(plan OperationPlan, m *Manifest) OperationPlan {
@@ -97,13 +98,13 @@ func (e *Engine) enrichPlan(plan OperationPlan, m *Manifest) OperationPlan {
 			plan.Blockers = append(plan.Blockers, "merge started without --keep; retention choice cannot change during retry")
 		}
 		if command == "refresh" && m.State != "ready" && m.State != "refreshing" {
-			plan.Blockers = append(plan.Blockers, "Change is not active or refreshing")
+			plan.Blockers = append(plan.Blockers, "managed workspace is not active or refreshing")
 		}
 		if command == "merge" && m.State != "ready" && m.State != "merging" && m.State != "merge-finalizing" {
-			plan.Blockers = append(plan.Blockers, "Change is not active or merging")
+			plan.Blockers = append(plan.Blockers, "managed workspace is not active or merging")
 		}
 		if command == "drop" && (m.State == "integrated" || m.State == "merging" || m.State == "merge-finalizing" || m.State == "refreshing") {
-			plan.Blockers = append(plan.Blockers, "finish the interrupted operation before dropping this Change")
+			plan.Blockers = append(plan.Blockers, "finish the interrupted operation before dropping this managed workspace")
 		}
 		if err := e.ensureCurrentSelection(m); err != nil {
 			plan.Blockers = append(plan.Blockers, err.Error())
@@ -272,7 +273,7 @@ func (e *Engine) enrichPlan(plan OperationPlan, m *Manifest) OperationPlan {
 			if _, err := localBaseline(&r); err != nil {
 				plan.Blockers = append(plan.Blockers, err.Error())
 			}
-			add(r, "refresh", r.Path, "merge local trunk "+r.Repository.Trunk+" into Change", "pending")
+			add(r, "refresh", r.Path, "merge local trunk "+r.Repository.Trunk+" into managed workspace", "pending")
 		}
 	default:
 		for _, r := range states {
@@ -314,21 +315,27 @@ func (e *Engine) enrichPlan(plan OperationPlan, m *Manifest) OperationPlan {
 	}
 	return plan
 }
-func (e *Engine) createPlanManifest(slug, only, except string) (*Manifest, error) {
+func (e *Engine) createPlanManifest(name, only, except string) (*Manifest, error) {
 	selected, err := e.selectedRepositories(only, except)
 	if err != nil {
 		return nil, err
 	}
-	tag := newTag(slug)
-	path := changeWorkspace(e.Root, tag)
+	if !validBranch(name) {
+		return nil, fmt.Errorf("workspace name must be a valid Git branch")
+	}
+	workspaceID, err := WorkspaceID()
+	if err != nil {
+		return nil, err
+	}
+	path := changeWorkspace(e.Root, workspaceID)
 	url, err := git(e.Root, "remote", "get-url", "origin")
 	if err != nil {
 		return nil, err
 	}
-	m := &Manifest{Version: 4, Tag: tag, Slug: slug, Origin: e.Root, Workspace: path, Config: e.Config, State: "creating", Hooks: map[string]HookState{}}
-	m.Repositories = append(m.Repositories, RepoState{Repository: Repository{Name: "root", URL: url, Trunk: e.Config.Root.Trunk}, Origin: e.Root, Path: path})
+	m := &Manifest{Version: 5, WorkspaceID: workspaceID, Name: name, CreatedAt: time.Now().UTC(), RootOrigin: e.Root, RootCustody: "vcm", Origin: e.Root, Workspace: path, Config: e.Config, State: "creating", Hooks: map[string]HookState{}}
+	m.Repositories = append(m.Repositories, RepoState{Repository: Repository{Name: "root", URL: url, Trunk: e.Config.Root.Trunk}, Origin: e.Root, Path: path, CheckoutCustody: "vcm", BranchCustody: "vcm"})
 	for _, r := range selected {
-		m.Repositories = append(m.Repositories, RepoState{Repository: r, Origin: filepath.Join(e.Root, r.Path), Path: filepath.Join(path, r.Path)})
+		m.Repositories = append(m.Repositories, RepoState{Repository: r, Origin: filepath.Join(e.Root, r.Path), Path: filepath.Join(path, r.Path), CheckoutCustody: "vcm", BranchCustody: "vcm"})
 	}
 	m.Recorded = e.recordConfiguration(m)
 	return m, nil

@@ -37,7 +37,7 @@ func TestListHumanOutputSortsAndMarksCurrentChange(t *testing.T) {
 	for _, item := range summary {
 		entries = append(entries, overviewEntry{listResult: item, BaseUpdate: "unknown", Operation: humanLifecycle(item.State)})
 	}
-	output := renderHumanForTest(t, overviewResult{Changes: entries, verbose: true})
+	output := renderHumanForTest(t, overviewResult{Workspaces: entries, verbose: true})
 	if strings.Index(output, "newer") > strings.Index(output, "older") {
 		t.Fatalf("Changes are not newest first:\n%s", output)
 	}
@@ -58,15 +58,33 @@ func TestListEmptyHumanAndJSONOutput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if human != "No Changes.\n" {
+	if human != "No managed workspaces.\n" {
 		t.Fatalf("unexpected empty list: %q", human)
 	}
 	result, err := runJSON[overviewResult](t, "list", "--json", "--workspace", root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Changes) != 0 {
+	if len(result.Workspaces) != 0 {
 		t.Fatalf("expected empty JSON array, got %+v", result)
+	}
+}
+
+func TestCompletedVersionFourHistoryKeepsDistinctReadOnlyIdentities(t *testing.T) {
+	manifests := []*vcm.Manifest{
+		{Version: 4, Tag: "250101010101-first", Slug: "first", Workspace: "/tmp/workspace.250101010101-first", State: "dropped", Repositories: []vcm.RepoState{{Removed: true}}},
+		{Version: 4, Tag: "250101010102-second", Slug: "second", Workspace: "/tmp/workspace.250101010102-second", State: "dropped", Repositories: []vcm.RepoState{{Removed: true}}},
+	}
+	results := newListResults(manifests, "/tmp")
+	if len(results) != 2 || results[0].WorkspaceID == results[1].WorkspaceID {
+		t.Fatalf("legacy histories collided: %#v", results)
+	}
+	got := map[string]string{}
+	for _, result := range results {
+		got[result.WorkspaceID] = result.Name
+	}
+	if got[manifests[0].Tag] != "first" || got[manifests[1].Tag] != "second" {
+		t.Fatalf("legacy history identities were lost: %#v", results)
 	}
 }
 
@@ -176,7 +194,7 @@ func TestAgeBoundaries(t *testing.T) {
 }
 
 func TestInspectionPresentationContract(t *testing.T) {
-	report := vcm.TreeReport{Workspace: "/workspace", Context: "change", Change: "260910120000-example", Repositories: []vcm.TreeRepository{
+	report := vcm.TreeReport{Workspace: "/workspace", Context: "workspace", WorkspaceID: "ws-11111111111111111111111111111111", Repositories: []vcm.TreeRepository{
 		{Name: "root", Path: "/change", Available: true, Branch: "change", Clean: false, TrackedChanges: 2, UntrackedFiles: 1, TreeState: "changed", SyncState: "diverged", SyncTarget: "main", Ahead: 3, Behind: 4},
 		{Name: "api", Path: "/change/api", TreeState: "missing", SyncState: "unavailable"},
 	}}
@@ -195,7 +213,7 @@ func TestInspectionPresentationContract(t *testing.T) {
 	if err := json.Unmarshal(encoded.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload["workspace"] != report.Workspace || payload["context"] != "change" || payload["workspace_id"] != report.Change {
+	if payload["workspace"] != report.Workspace || payload["context"] != "workspace" || payload["workspace_id"] != report.WorkspaceID {
 		t.Fatalf("unexpected tree JSON: %s", encoded.String())
 	}
 	repositories := payload["repositories"].([]any)

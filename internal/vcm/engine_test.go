@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"go.yaml.in/yaml/v3"
@@ -147,6 +148,160 @@ func TestCreateExistingUsesOpaqueIDAndReleasesExternalRoot(t *testing.T) {
 	}
 }
 
+func TestCreateExistingPreflightsChildrenBeforeAttachingDetachedRoot(t *testing.T) {
+	e := fixture(t, 1)
+	external := filepath.Join(filepath.Dir(e.Root), "harness-preflight")
+	mustGit(t, e.Root, "worktree", "add", "--detach", external, "HEAD")
+	mustGit(t, filepath.Join(e.Root, e.Config.Children[0].Path), "branch", "collision")
+	if _, err := e.CreateExisting("collision", external, "", ""); err == nil || !strings.Contains(err.Error(), "branch collision") {
+		t.Fatalf("child collision = %v", err)
+	}
+	if attached, err := branch(external); err == nil {
+		t.Fatalf("preflight attached external root to %q", attached)
+	}
+	all, err := e.All()
+	if err != nil || len(all) != 0 {
+		t.Fatalf("failed preflight persisted state: %#v, %v", all, err)
+	}
+}
+
+func TestCreateExistingReloadResumesAfterDurableBranchCheckpoint(t *testing.T) {
+	e := fixture(t, 0)
+	gate := filepath.Join(filepath.Dir(e.Root), "allow-create")
+	t.Setenv("VCM_TEST_GATE", gate)
+	e.Config.Root.Hooks = Hooks{HookCreateBefore: {{ID: "gate", Shell: `test -f "$VCM_TEST_GATE"`}}}
+	saveContractConfig(t, e)
+	e, err := Open(e.Root, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	external := filepath.Join(filepath.Dir(e.Root), "harness-retry")
+	mustGit(t, e.Root, "worktree", "add", "--detach", external, "HEAD")
+	if _, err := e.CreateExisting("resumable", external, "", ""); err == nil {
+		t.Fatal("create-before hook unexpectedly passed")
+	}
+	all, err := e.All()
+	if err != nil || len(all) != 1 || all[0].State != StateCreating || all[0].Repositories[0].BranchCustody != "vcm" {
+		t.Fatalf("missing durable adoption checkpoint: %#v, %v", all, err)
+	}
+	checkpointID := all[0].WorkspaceID
+	if got, err := branch(external); err != nil || got != "resumable" {
+		t.Fatalf("checkpointed branch = %q, %v", got, err)
+	}
+	put(t, gate, "allow")
+	e, err = Open(e.Root, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumed, err := e.CreateExisting("", external, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.WorkspaceID != checkpointID || resumed.State != StateReady {
+		t.Fatalf("retry did not resume checkpoint: %#v", resumed)
+	}
+}
+
+func TestCreateExistingPreservesHarnessOwnedAttachedBranch(t *testing.T) {
+	e := fixture(t, 0)
+	external := filepath.Join(filepath.Dir(e.Root), "harness-attached")
+	mustGit(t, e.Root, "worktree", "add", "-b", "harness-owned", external, "HEAD")
+	m, err := e.CreateExisting("", external, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Repositories[0].BranchCustody != "external" {
+		t.Fatalf("branch custody = %q", m.Repositories[0].BranchCustody)
+	}
+	if err := e.Drop(m); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := branch(external); err != nil || got != "harness-owned" {
+		t.Fatalf("harness branch was not preserved: %q, %v", got, err)
+	}
+	if _, err := git(e.Root, "show-ref", "--verify", "refs/heads/harness-owned"); err != nil {
+		t.Fatal("harness-owned branch was deleted")
+	}
+}
+
+func TestCreateExistingCreatesChildrenAndRunsLifecycleHooks(t *testing.T) {
+	e := fixture(t, 1)
+	log := filepath.Join(filepath.Dir(e.Root), "create-events")
+	t.Setenv("VCM_TEST_EVENTS", log)
+	e.Config.Root.Hooks = Hooks{HookCreateAfter: {{ID: "root-after", Shell: `echo root-after >> "$VCM_TEST_EVENTS"`}}}
+	e.Config.Children[0].Hooks = Hooks{
+		HookCreateBefore: {{ID: "child-before", Shell: `echo child-before >> "$VCM_TEST_EVENTS"`}},
+		HookCreateAfter:  {{ID: "child-after", Shell: `echo child-after >> "$VCM_TEST_EVENTS"`}},
+	}
+	saveContractConfig(t, e)
+	e, err := Open(e.Root, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	external := filepath.Join(filepath.Dir(e.Root), "harness-children")
+	mustGit(t, e.Root, "worktree", "add", "--detach", external, "HEAD")
+	m, err := e.CreateExisting("with-children", external, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Repositories) != 2 || m.Repositories[1].CheckoutCustody != "vcm" {
+		t.Fatalf("child custody not recorded: %#v", m.Repositories)
+	}
+	if got, err := branch(m.Repositories[1].Path); err != nil || got != m.Name {
+		t.Fatalf("child branch = %q, %v", got, err)
+	}
+	data, err := os.ReadFile(log)
+	if err != nil || string(data) != "child-before\nchild-after\nroot-after\n" {
+		t.Fatalf("hook order = %q, %v", data, err)
+	}
+}
+
+func TestCompletedVersionFourHistorySelectsByExactLegacyTagWithoutCollision(t *testing.T) {
+	e := fixture(t, 0)
+	tags := []string{"250101010101-first", "250101010102-second"}
+	for index, tag := range tags {
+		m, err := e.Create(fmt.Sprintf("history-%d", index))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := e.Drop(m); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(e.store.dir, m.WorkspaceID+".json")
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var state persistedManifest
+		if err := json.Unmarshal(raw, &state); err != nil {
+			t.Fatal(err)
+		}
+		state.Version = 4
+		state.WorkspaceID, state.Name, state.CreatedAt = "", "", ""
+		state.RootOrigin, state.RootCustody, state.Workspace = "", "", ""
+		raw, err = json.Marshal(state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(e.store.dir, tag+".json"), raw, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	all, err := e.All()
+	if err != nil || len(all) != 2 {
+		t.Fatalf("legacy history = %#v, %v", all, err)
+	}
+	for _, tag := range tags {
+		selected, err := e.Select(tag, e.Root)
+		if err != nil || selected.Tag != tag || selected.Version != 4 {
+			t.Fatalf("select %s = %#v, %v", tag, selected, err)
+		}
+	}
+}
+
 func TestSelectInfersChangeFromManagedWorktree(t *testing.T) {
 	e := fixture(t, 1)
 	m, err := e.Create("selection-context")
@@ -165,7 +320,7 @@ func TestSelectInfersChangeFromManagedWorktree(t *testing.T) {
 		selector string
 		cwd      string
 	}{
-		"tag":              {selector: m.Tag, cwd: e.Root},
+		"workspace ID":     {selector: m.WorkspaceID, cwd: e.Root},
 		"workspace path":   {selector: m.Workspace, cwd: e.Root},
 		"root":             {cwd: m.Workspace},
 		"root descendant":  {cwd: rootNested},
@@ -177,16 +332,16 @@ func TestSelectInfersChangeFromManagedWorktree(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if selected.Tag != m.Tag {
-				t.Fatalf("selected %q, want %q", selected.Tag, m.Tag)
+			if selected.WorkspaceID != m.WorkspaceID {
+				t.Fatalf("selected %q, want %q", selected.WorkspaceID, m.WorkspaceID)
 			}
 		})
 	}
 
-	if _, err := e.Select("", e.Root); err == nil || err.Error() != "Change argument is required outside a managed Change worktree" {
+	if _, err := e.Select("", e.Root); err == nil || err.Error() != "workspace ID or path is required outside a managed workspace" {
 		t.Fatalf("unexpected omitted-selection error: %v", err)
 	}
-	if _, err := e.Select("missing-change", e.Root); err == nil || !strings.Contains(err.Error(), `no managed Change matches "missing-change"`) {
+	if _, err := e.Select("missing-workspace", e.Root); err == nil || !strings.Contains(err.Error(), `no managed workspace matches "missing-workspace"`) {
 		t.Fatalf("unexpected explicit-selection error: %v", err)
 	}
 }
@@ -197,7 +352,7 @@ func TestCreateMergeLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantWorkspace := filepath.Join(filepath.Dir(e.Root), filepath.Base(e.Root)+"."+m.Tag)
+	wantWorkspace := filepath.Join(filepath.Dir(e.Root), filepath.Base(e.Root)+"."+m.WorkspaceID)
 	if m.Workspace != wantWorkspace {
 		t.Fatalf("workspace = %q, want %q", m.Workspace, wantWorkspace)
 	}
@@ -250,10 +405,10 @@ func TestMergeMessageContract(t *testing.T) {
 	allow := filepath.Join(filepath.Dir(e.Root), "allow-message-merge")
 	e.Config.Root.Hooks = Hooks{HookMergeBefore: {{ID: "stop", Shell: `test -f "` + allow + `"`}}}
 	saveContractConfig(t, e)
-	if _, err = e.AdoptConfiguration(m.Tag, e.Root); err != nil {
+	if _, err = e.AdoptConfiguration(m.WorkspaceID, e.Root); err != nil {
 		t.Fatal(err)
 	}
-	m, err = e.Select(m.Tag, e.Root)
+	m, err = e.Select(m.WorkspaceID, e.Root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -265,7 +420,7 @@ func TestMergeMessageContract(t *testing.T) {
 		"feat: shared subject",
 		"",
 		"Commits:",
-		"- " + abbreviated(t, m.Workspace, rootRefresh) + " chore(vcm): refresh " + m.Tag,
+		"- " + abbreviated(t, m.Workspace, rootRefresh) + " chore(vcm): refresh " + m.Name,
 		"- " + abbreviated(t, m.Workspace, sourceRevisions["root"]) + " feat: update changed.txt",
 	}, "\n")
 	if err = e.Merge(m, "feat: shared subject"); err == nil {
@@ -299,12 +454,12 @@ func TestMergeDefaultMessageAcrossChangedRepositories(t *testing.T) {
 	for i := range m.Repositories {
 		commitFile(t, m.Repositories[i].Path, "default.txt", "changed\n")
 		revision := mustGit(t, m.Repositories[i].Path, "rev-parse", "HEAD")
-		wantMessages[m.Repositories[i].Repository.Name] = "feat: default-message\n\nCommits:\n- " + abbreviated(t, m.Repositories[i].Path, revision) + " feat: update default.txt"
+		wantMessages[m.Repositories[i].Repository.Name] = "chore(vcm): integrate workspace\n\nCommits:\n- " + abbreviated(t, m.Repositories[i].Path, revision) + " feat: update default.txt"
 	}
 	if err = e.Merge(m); err != nil {
 		t.Fatal(err)
 	}
-	if m.MergeMessage != "feat: default-message" {
+	if m.MergeMessage != "chore(vcm): integrate workspace" {
 		t.Fatalf("default message not persisted: %q", m.MergeMessage)
 	}
 	for _, repository := range m.Repositories {
@@ -358,7 +513,7 @@ func TestMergeCommitHistoryPerRepository(t *testing.T) {
 		"",
 		"Commits:",
 		"- " + abbreviated(t, changed.Origin, hookCommit) + " chore: merge hook",
-		"- " + abbreviated(t, changed.Origin, refreshCommit) + " chore(vcm): refresh " + m.Tag,
+		"- " + abbreviated(t, changed.Origin, refreshCommit) + " chore(vcm): refresh " + m.Name,
 		"- " + abbreviated(t, changed.Origin, childSource) + " feat: child source",
 	}, "\n")
 	if got := mustGit(t, root.Origin, "log", "-1", "--format=%B"); got != wantRoot {
@@ -438,7 +593,7 @@ func TestMergeRemovesIgnoredContentWithoutRecoveryBackups(t *testing.T) {
 		if _, err = os.Lstat(repository.Path); !os.IsNotExist(err) {
 			t.Fatalf("worktree with ignored content remains: %s", repository.Path)
 		}
-		if _, err = git(repository.Origin, "show-ref", "--verify", "refs/heads/"+m.Tag); err == nil {
+		if _, err = git(repository.Origin, "show-ref", "--verify", "refs/heads/"+m.Name); err == nil {
 			t.Fatalf("Change branch remains for %s", repository.Repository.Name)
 		}
 	}
@@ -554,7 +709,7 @@ func TestMergeIgnoreHookFailuresKeepsRunnerAndRevisionFailuresFatal(t *testing.T
 		}
 		commitFile(t, e.Root, "drift.txt", "drift\n")
 		e.IgnoreHookFailures = true
-		want := fmt.Sprintf("repository root: target advanced from recorded base; run vcm refresh %s", m.Tag)
+		want := fmt.Sprintf("repository root: target advanced from recorded base; run vcm refresh %s", m.WorkspaceID)
 		if err = e.Merge(m); err == nil || err.Error() != want {
 			t.Fatalf("force ignored target drift: %v", err)
 		}
@@ -786,7 +941,7 @@ func TestRefreshAdvancedAndSelectedRepositories(t *testing.T) {
 	}
 	commitFile(t, m.Repositories[1].Path, "feature.txt", "feature\n")
 	commitFile(t, m.Repositories[1].Origin, "trunk.txt", "trunk\n")
-	want := fmt.Sprintf("repository repo0: target advanced from recorded base; run vcm refresh %s", m.Tag)
+	want := fmt.Sprintf("repository repo0: target advanced from recorded base; run vcm refresh %s", m.WorkspaceID)
 	if err = e.Merge(m, "feat: selected refresh"); err == nil || err.Error() != want {
 		t.Fatalf("merge did not block advanced target: %v", err)
 	}
@@ -931,7 +1086,7 @@ func TestRefreshReconcilesAdvancedTargetAfterPreparedCheckpoint(t *testing.T) {
 			}
 			switch prepared {
 			case "merge-commit":
-				mustGit(t, r.Path, "update-ref", "refs/heads/"+m.Tag, r.MergeCommit, r.Source)
+				mustGit(t, r.Path, "update-ref", "refs/heads/"+m.Name, r.MergeCommit, r.Source)
 				mustGit(t, r.Path, "reset", "--hard", r.MergeCommit)
 			case "index":
 				mustGit(t, r.Path, "read-tree", "-u", "-m", r.Source, r.MergeCommit)
@@ -1119,7 +1274,7 @@ func TestRemovedSelectedRepositoryBlocksMutationButStatusReportsIt(t *testing.T)
 	}
 	e.Config.Children = []Repository{}
 	e.store.config = e.Config
-	m, err = e.store.load(m.Tag)
+	m, err = e.store.load(m.WorkspaceID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1146,7 +1301,7 @@ func TestRepositoryAddedDuringActiveChangeIsSkippedByMergeAndDrop(t *testing.T) 
 	e.Config.Children = append(e.Config.Children, added)
 	saveContractConfig(t, e)
 	e.store.config = e.Config
-	m, err = e.store.load(m.Tag)
+	m, err = e.store.load(m.WorkspaceID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1199,10 +1354,10 @@ func TestPostMergeFailureResumesWithoutDuplicate(t *testing.T) {
 	sentinel := filepath.Join(filepath.Dir(e.Root), "allow")
 	e.Config.Root.Hooks = Hooks{HookMergeAfter: {{ID: "gate", Shell: "test -f " + sentinel}}}
 	saveContractConfig(t, e)
-	if _, err = e.AdoptConfiguration(m.Tag, e.Root); err != nil {
+	if _, err = e.AdoptConfiguration(m.WorkspaceID, e.Root); err != nil {
 		t.Fatal(err)
 	}
-	m, err = e.Select(m.Tag, e.Root)
+	m, err = e.Select(m.WorkspaceID, e.Root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1256,7 +1411,7 @@ func TestDropAfterFailureResumesAfterWorktreeRemoval(t *testing.T) {
 		t.Fatal("child worktree remains after removal")
 	}
 	put(t, allow, "allowed")
-	m, err = e.store.load(m.Tag)
+	m, err = e.store.load(m.WorkspaceID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1321,11 +1476,11 @@ func TestMergeRejectsTargetDriftBeforeFurtherIntegration(t *testing.T) {
 	firstTarget := mustGit(t, m.Repositories[1].Origin, "rev-parse", "HEAD")
 	commitFile(t, e.Root, "unexpected.txt", "target drift\n")
 	put(t, allow, "allowed")
-	m, err = e.store.load(m.Tag)
+	m, err = e.store.load(m.WorkspaceID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := fmt.Sprintf("repository root: target advanced from recorded base; run vcm refresh %s", m.Tag)
+	want := fmt.Sprintf("repository root: target advanced from recorded base; run vcm refresh %s", m.WorkspaceID)
 	if err = e.Merge(m, "feat: test change"); err == nil || err.Error() != want {
 		t.Fatalf("target drift accepted: %v", err)
 	}
@@ -1513,7 +1668,7 @@ func TestMergeRecoversPreparedIndex(t *testing.T) {
 		t.Fatal(err)
 	}
 	mustGit(t, r.Origin, "read-tree", "-u", "-m", r.TargetBefore, r.MergeCommit)
-	m, err = e.store.load(m.Tag)
+	m, err = e.store.load(m.WorkspaceID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1570,8 +1725,8 @@ func TestDropPreservesUnrelatedBranch(t *testing.T) {
 }
 func TestDryRunCreatesNoState(t *testing.T) {
 	e := fixture(t, 0)
-	if _, err := e.CreatePlan("bad_slug"); err == nil {
-		t.Fatal("invalid dry-run slug accepted")
+	if _, err := e.CreatePlan("bad name"); err == nil {
+		t.Fatal("invalid dry-run workspace name accepted")
 	}
 	e.DryRun = true
 	if err := e.Mutate(func() error { t.Fatal("dry run mutation executed"); return nil }); err != nil {

@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-// Refresh merges advanced canonical local trunks into the selected Change
+// Refresh merges advanced canonical local trunks into the selected workspace.
 // worktrees. It never fetches; callers update canonical trunks explicitly with
 // vcm pull.
 func (e *Engine) Refresh(m *Manifest) error {
@@ -56,12 +56,12 @@ func (e *Engine) Refresh(m *Manifest) error {
 					return fmt.Errorf("repository %s: current canonical target %s does not contain recorded refresh target %s; inspect rewritten target before retrying", r.Repository.Name, target, r.TargetBefore)
 				}
 				if recovery.source != r.Source && !ancestor(r.Path, r.TargetBefore, recovery.source) {
-					return fmt.Errorf("repository %s: Change HEAD %s does not contain recorded refresh target %s; restore or complete the recorded refresh before retrying", r.Repository.Name, recovery.source, r.TargetBefore)
+					return fmt.Errorf("repository %s: workspace HEAD %s does not contain recorded refresh target %s; restore or complete the recorded refresh before retrying", r.Repository.Name, recovery.source, r.TargetBefore)
 				}
 				if cleanErr := clean(r.Path); cleanErr != nil {
 					return fmt.Errorf("repository %s: recorded refresh is incomplete with canonical target %s (recorded %s): %w", r.Repository.Name, target, r.TargetBefore, cleanErr)
 				}
-				return fmt.Errorf("repository %s: recorded refresh is incomplete with Change HEAD %s, recorded target %s, and current canonical target %s; complete the recorded refresh before retrying", r.Repository.Name, recovery.source, r.TargetBefore, target)
+				return fmt.Errorf("repository %s: recorded refresh is incomplete with workspace HEAD %s, recorded target %s, and current canonical target %s; complete the recorded refresh before retrying", r.Repository.Name, recovery.source, r.TargetBefore, target)
 			}
 			if err = e.finalizeRefreshRecovery(m, r, recovery); err != nil {
 				return err

@@ -37,7 +37,7 @@ func TestExtendedPublishPreviewAndJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Change != m.WorkspaceID || len(result.Repositories) != 1 {
+	if result.WorkspaceID != m.WorkspaceID || len(result.Repositories) != 1 {
 		t.Fatalf("publication JSON: %+v", result)
 	}
 	row := result.Repositories[0]
@@ -97,7 +97,7 @@ func TestExtendedKeepCleanupAndRecoveryOptions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !adoption.DryRun || adoption.Change != m.WorkspaceID {
+	if !adoption.DryRun || adoption.WorkspaceID != m.WorkspaceID {
 		t.Fatalf("adoption preview: %+v", adoption)
 	}
 	merged, err := runJSON[mergeResult](t, "merge", m.WorkspaceID, "--keep", "--json", "--workspace", root)
@@ -167,7 +167,7 @@ func TestExtendedFailureRecoveryCommands(t *testing.T) {
 	}
 	portable := "ssh://example.test/workspace.git"
 	extendedGit(t, root, "remote", "set-url", "origin", portable)
-	snapshot := vcm.Snapshot{Version: 1, Tag: m.Tag, Repositories: []vcm.SnapshotRepository{{Name: "root", Path: ".", URL: portable, Trunk: "main", Base: extendedGit(t, root, "rev-parse", "HEAD"), Source: strings.Repeat("1", 40)}}}
+	snapshot := vcm.Snapshot{Version: 2, WorkspaceName: m.Name, Repositories: []vcm.SnapshotRepository{{Name: "root", Path: ".", URL: portable, Trunk: "main", Base: extendedGit(t, root, "rev-parse", "HEAD"), Source: strings.Repeat("1", 40)}}}
 	file := filepath.Join(t.TempDir(), "snapshot with spaces.json")
 	data, err = json.Marshal(snapshot)
 	if err != nil {

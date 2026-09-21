@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -173,6 +174,67 @@ func cliManagedChange(t *testing.T) (string, *vcm.Manifest) {
 	if err := engine.Mutate(func() error {
 		var createErr error
 		manifest, createErr = engine.Create("context-selection")
+		return createErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return root, manifest
+}
+
+func cliManagedWorkspaceWithChild(t *testing.T) (string, *vcm.Manifest) {
+	t.Helper()
+	root := cliCleanWorkspace(t)
+	child := filepath.Join(filepath.Dir(root), "api")
+	for _, args := range [][]string{
+		{"init", "--initial-branch=main", child},
+		{"-C", child, "config", "user.name", "VCM Test"},
+		{"-C", child, "config", "user.email", "vcm@example.test"},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %s %v", args, out, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(child, "README.md"), []byte("api\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"-C", child, "add", "README.md"}, {"-C", child, "commit", "-m", "chore: initialize api"}} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %s %v", args, out, err)
+		}
+	}
+
+	config := fmt.Sprintf("version: 1\nroot:\n  trunk: main\nchildren:\n- name: api\n  path: repos/api\n  url: %s\n  trunk: main\n", child)
+	if err := os.WriteFile(filepath.Join(root, "vcm.yml"), []byte(config), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("/repos/\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	rootRemote := filepath.Join(filepath.Dir(root), "workspace.git")
+	if out, err := exec.Command("git", "init", "--bare", "--initial-branch=main", rootRemote).CombinedOutput(); err != nil {
+		t.Fatalf("git init remote: %s %v", out, err)
+	}
+	for _, args := range [][]string{
+		{"-C", root, "add", "vcm.yml", ".gitignore"},
+		{"-C", root, "commit", "-m", "chore: configure api repository"},
+		{"-C", root, "remote", "add", "origin", rootRemote},
+		{"-C", root, "push", "origin", "main"},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %s %v", args, out, err)
+		}
+	}
+	engine, err := vcm.Open(root, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.Bootstrap(); err != nil {
+		t.Fatal(err)
+	}
+	var manifest *vcm.Manifest
+	if err := engine.Mutate(func() error {
+		var createErr error
+		manifest, createErr = engine.Create("missing-config")
 		return createErr
 	}); err != nil {
 		t.Fatal(err)
@@ -360,7 +422,7 @@ func TestTreeWorkspaceOverrideSelectsRequestedContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if change.Context != "change" || change.WorkspaceID != manifest.WorkspaceID || change.Workspace != manifest.Workspace {
+	if change.Context != "workspace" || change.WorkspaceID != manifest.WorkspaceID || change.Workspace != manifest.Workspace {
 		t.Fatalf("explicit Change workspace selected wrong context: %+v", change)
 	}
 }

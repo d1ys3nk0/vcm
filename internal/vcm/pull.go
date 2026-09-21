@@ -87,10 +87,10 @@ func (e *Engine) Pull() error {
 		}
 		users, usersErr := e.baselineUsers(r, item.path, item.local, item.remote)
 		if usersErr != nil {
-			return fmt.Errorf("repository %s pull: inspect active Change baselines: %w", r.Name, usersErr)
+			return fmt.Errorf("repository %s pull: inspect active workspace baselines: %w", r.Name, usersErr)
 		}
 		if len(users) > 0 {
-			return fmt.Errorf("repository %s pull would rewrite commits recorded as baselines by active Changes: %s; refresh, merge, or drop those Changes before retrying", r.Name, strings.Join(users, ", "))
+			return fmt.Errorf("repository %s pull would rewrite commits recorded as baselines by active managed workspaces: %s; refresh, merge, or drop those workspaces before retrying", r.Name, strings.Join(users, ", "))
 		}
 	}
 	for _, item := range repositories {

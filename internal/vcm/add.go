@@ -14,7 +14,7 @@ func (e *Engine) expansion(m *Manifest, only string) ([]RepoState, []string, err
 		return nil, nil, err
 	}
 	if m.State != "ready" && m.State != "expanding" {
-		return nil, nil, fmt.Errorf("Change must be ready or an interrupted expansion")
+		return nil, nil, fmt.Errorf("managed workspace must be ready or an interrupted expansion")
 	}
 	if only == "" {
 		return nil, nil, fmt.Errorf("add requires --only")
@@ -71,7 +71,7 @@ func (e *Engine) expansion(m *Manifest, only string) ([]RepoState, []string, err
 		if selected[r.Name] {
 			continue
 		}
-		additions = append(additions, RepoState{Repository: r, Origin: filepath.Join(e.Root, r.Path), Path: filepath.Join(m.Workspace, r.Path)})
+		additions = append(additions, RepoState{Repository: r, Origin: filepath.Join(e.Root, r.Path), Path: filepath.Join(m.Workspace, r.Path), CheckoutCustody: "vcm", BranchCustody: "vcm"})
 		selected[r.Name] = true
 	}
 	if len(requested) > 0 {
@@ -105,7 +105,7 @@ func (e *Engine) expansion(m *Manifest, only string) ([]RepoState, []string, err
 }
 
 func (e *Engine) AddPlan(m *Manifest, only string) OperationPlan {
-	plan := OperationPlan{Command: "add", DryRun: true, Tag: workspaceSelector(m), Workspace: m.Workspace}
+	plan := OperationPlan{Command: "add", DryRun: true, WorkspaceID: workspaceSelector(m), Workspace: m.Workspace}
 	additions, _, err := e.expansion(m, only)
 	if err != nil {
 		plan.Blockers = append(plan.Blockers, err.Error())

@@ -75,7 +75,7 @@ func TestPullBlocksRewritingActiveChangeBaseline(t *testing.T) {
 	before := mustGit(t, child, "rev-parse", "HEAD")
 	advancePullRemote(t, e.Config.Children[0].URL, "remote.txt")
 	err = e.Pull()
-	if err == nil || !strings.Contains(err.Error(), "repository repo0 pull would rewrite commits recorded as baselines by active Changes: "+manifest.Tag) {
+	if err == nil || !strings.Contains(err.Error(), "repository repo0 pull would rewrite commits recorded as baselines by active managed workspaces: "+manifest.WorkspaceID) {
 		t.Fatalf("unexpected baseline guard error: %v", err)
 	}
 	if after := mustGit(t, child, "rev-parse", "HEAD"); after != before {

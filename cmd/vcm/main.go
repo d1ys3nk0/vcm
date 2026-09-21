@@ -69,6 +69,9 @@ func run(args []string) error {
 	if command == "_complete" && (arg == "commands" || strings.HasPrefix(arg, "flags:")) {
 		return complete(nil, arg)
 	}
+	if command == "_integrate-adapter" {
+		return runIntegrationAdapter(arg, opts.adapterPath)
+	}
 	engine, err := vcm.Open(workspace, os.Stderr)
 	if err != nil {
 		return &vcm.Error{Code: "configuration", Err: err}
@@ -98,9 +101,6 @@ func run(args []string) error {
 			return integrateErr
 		}
 		return output(result)
-	}
-	if command == "_integrate-adapter" {
-		return runIntegrationAdapter(arg)
 	}
 	if skipHooks != "" {
 		phases, parseErr := parseMergeHookPhases(skipHooks)
@@ -315,7 +315,7 @@ func run(args []string) error {
 			return incompleteResultError{command: "status"}
 		}
 	case overviewResult:
-		for _, c := range value.Changes {
+		for _, c := range value.Workspaces {
 			if inspectionFailed(c.Inspection) {
 				return incompleteResultError{command: "list"}
 			}

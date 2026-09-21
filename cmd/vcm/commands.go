@@ -15,20 +15,20 @@ type commandDefinition struct {
 }
 
 var commands = []commandDefinition{
-	{"add", "[change]", "Expand a Change with selected repositories.", []string{"only", "dry-run"}, 0, 1},
-	{"diff", "[change]", "Inspect a combined Change diff.", []string{"only", "stat", "committed", "patch"}, 0, 1},
-	{"publish", "[change]", "Publish Change branches, children before root.", []string{"dry-run"}, 0, 1},
-	{"export", "[change]", "Export a portable JSON Change snapshot.", nil, 0, 1},
+	{"add", "[workspace]", "Expand a managed workspace with selected repositories.", []string{"only", "dry-run"}, 0, 1},
+	{"diff", "[workspace]", "Inspect a combined managed workspace diff.", []string{"only", "stat", "committed", "patch"}, 0, 1},
+	{"publish", "[workspace]", "Publish workspace branches, children before root.", []string{"dry-run"}, 0, 1},
+	{"export", "[workspace]", "Export a portable managed workspace snapshot.", nil, 0, 1},
 	{"restore", "<snapshot-file>", "Restore exact snapshot revisions without hooks.", []string{"name", "fetch", "dry-run"}, 1, 1},
-	{"cleanup", "[change]", "Remove retained integrated worktrees and finalize.", []string{"dry-run", "no-cd"}, 0, 1},
+	{"cleanup", "[workspace]", "Remove retained integrated worktrees and finalize.", []string{"dry-run", "no-cd"}, 0, 1},
 	{"create", "[name]", "Create a managed workspace from local trunks or an existing root.", []string{"existing-root", "only", "except", "dry-run", "no-cd"}, 0, 1},
 	{"integrate", "<codex|claude|opencode>", "Install or remove project-local harness integration.", []string{"dry-run", "remove"}, 1, 1},
-	{"switch", "[change]", "Enter an existing Change or the base workspace.", []string{"base", "no-cd"}, 0, 1},
-	{"status", "[change]", "Inspect working trees, divergence, and operation progress.", []string{"verbose"}, 0, 1},
-	{"list", "", "List active Changes and their working state.", []string{"all", "verbose"}, 0, 0},
-	{"refresh", "[change]", "Merge local trunks into a Change.", []string{"dry-run"}, 0, 1},
-	{"merge", "[change]", "Integrate a Change, remove worktrees, and finalize.", []string{"keep", "dry-run", "message", "ignore-hook-failures", "skip-hooks", "skip-hook-git-hooks", "no-cd"}, 0, 1},
-	{"drop", "[change]", "Remove owned Change resources.", []string{"dry-run", "force", "f", "no-cd"}, 0, 1},
+	{"switch", "[workspace]", "Enter a managed workspace or the base workspace.", []string{"base", "no-cd"}, 0, 1},
+	{"status", "[workspace]", "Inspect working trees, divergence, and operation progress.", []string{"verbose"}, 0, 1},
+	{"list", "", "List active managed workspaces and their working state.", []string{"all", "verbose"}, 0, 0},
+	{"refresh", "[workspace]", "Merge local trunks into a managed workspace.", []string{"dry-run"}, 0, 1},
+	{"merge", "[workspace]", "Integrate a managed workspace, remove worktrees, and finalize.", []string{"keep", "dry-run", "message", "ignore-hook-failures", "skip-hooks", "skip-hook-git-hooks", "no-cd"}, 0, 1},
+	{"drop", "[workspace]", "Remove owned managed workspace resources.", []string{"dry-run", "force", "f", "no-cd"}, 0, 1},
 	{"fetch", "", "Update cached remote trunk refs.", []string{"dry-run"}, 0, 0},
 	{"pull", "", "Fetch and rebase canonical local trunks.", []string{"dry-run"}, 0, 0},
 	{"push", "", "Publish child trunks, then the root trunk.", []string{"dry-run"}, 0, 0},
@@ -36,17 +36,17 @@ var commands = []commandDefinition{
 	{"bootstrap", "", "Clone missing configured repositories.", []string{"dry-run"}, 0, 0},
 	{"check", "", "Audit configuration, ownership, and Git resources.", []string{"config-only"}, 0, 0},
 	{"prune", "", "Interactively remove unexpected Git resources.", []string{"dry-run"}, 0, 0},
-	{"recover", "[change]", "Authorize retry of an inspected interrupted hook.", []string{"adopt-config", "retry-hook", "acknowledge-effects", "dry-run"}, 0, 1},
-	{"path", "[change]", "Print the absolute checkout path.", []string{"base"}, 0, 1},
+	{"recover", "[workspace]", "Authorize retry of an inspected interrupted hook.", []string{"adopt-config", "retry-hook", "acknowledge-effects", "dry-run"}, 0, 1},
+	{"path", "[workspace]", "Print the absolute checkout path.", []string{"base"}, 0, 1},
 	{"shell", "init <bash|zsh>", "Print shell integration and completions.", nil, 2, 2},
 	{"version", "", "Print version and source commit.", nil, 0, 0},
-	{"_integrate-adapter", "<codex|claude|opencode>", "", nil, 1, 1},
+	{"_integrate-adapter", "<codex|claude|opencode> [path]", "", nil, 1, 2},
 	{"_complete", "[kind]", "", nil, 0, 1},
 }
 var optionDescriptions = map[string]string{
-	"name": "SLUG  Name for restored Change", "fetch": "Fetch missing snapshot objects from trusted origins", "stat": "Show tracked diff statistics (default)", "committed": "Compare baseline to HEAD", "patch": "Include tracked patches", "keep": "Retain integrated worktrees for later cleanup", "adopt-config": "Adopt inspected execution configuration without running hooks",
+	"name": "NAME  Git branch name for the restored workspace", "fetch": "Fetch missing snapshot objects from trusted origins", "stat": "Show tracked diff statistics (default)", "committed": "Compare baseline to HEAD", "patch": "Include tracked patches", "keep": "Retain integrated worktrees for later cleanup", "adopt-config": "Adopt inspected execution configuration without running hooks",
 	"workspace": "PATH  Effective workspace context (default: current directory)", "existing-root": "PATH  Adopt a harness-created linked root worktree", "remove": "Remove the exact VCM-managed integration", "json": "Emit structured JSON", "color": "MODE  auto, always, or never", "help": "Show command help",
-	"dry-run": "Preview ordered effects and local blockers without mutation", "only": "NAMES  Select exact comma-separated children", "except": "NAMES  Exclude comma-separated children", "message": "SUBJECT  Squash commit subject", "ignore-hook-failures": "Continue after clean lifecycle hook command failures", "skip-hooks": "PHASES  Skip merge-before and/or merge-after", "skip-hook-git-hooks": "Disable Git hooks only inside merge lifecycle hooks", "force": "Back up and discard working content", "f": "Alias for --force", "no-cd": "Do not change the invoking shell directory", "verbose": "Show paths, checkpoints, and recovery detail", "all": "Include completed Changes", "config-only": "Validate configuration without inspecting child checkouts", "base": "Select the canonical workspace", "retry-hook": "KEY  Exact repository/phase/id of an interrupted hook", "acknowledge-effects": "Confirm external hook effects have been inspected", "trunk": "BRANCH  Existing local trunk (default: current branch)",
+	"dry-run": "Preview ordered effects and local blockers without mutation", "only": "NAMES  Select exact comma-separated children", "except": "NAMES  Exclude comma-separated children", "message": "SUBJECT  Squash commit subject", "ignore-hook-failures": "Continue after clean lifecycle hook command failures", "skip-hooks": "PHASES  Skip merge-before and/or merge-after", "skip-hook-git-hooks": "Disable Git hooks only inside merge lifecycle hooks", "force": "Back up and discard working content", "f": "Alias for --force", "no-cd": "Do not change the invoking shell directory", "verbose": "Show paths, checkpoints, and recovery detail", "all": "Include completed managed workspaces", "config-only": "Validate configuration without inspecting child checkouts", "base": "Select the canonical workspace", "retry-hook": "KEY  Exact repository/phase/id of an interrupted hook", "acknowledge-effects": "Confirm external hook effects have been inspected", "trunk": "BRANCH  Existing local trunk (default: current branch)",
 }
 
 const helpText = "VCM manages one workspace across multiple Git repositories.\n\nUsage: vcm [global options] <command> [arguments]\n"
@@ -93,13 +93,13 @@ func commandHelp(command string) string {
 		b.WriteString("\nWorkspace selectors accept an exact workspace ID or path. Omitted selectors use\n--workspace, otherwise the current directory. Flags may follow arguments.\n")
 	}
 	if command == "merge" {
-		b.WriteString("\nExample: vcm merge improve-search --message \"feat: improve search\"\nMerge integrates locally, then cleans up and runs finalization hooks.\n--keep retains integrated worktrees until vcm cleanup; cleanup deletes ignored\ncontent without backups. Repair a failure and rerun the same command to resume.\n")
+		b.WriteString("\nExample: vcm merge ws-0123456789abcdef0123456789abcdef --message \"feat: improve search\"\nMerge integrates locally, then cleans up and runs finalization hooks.\n--keep retains integrated worktrees until vcm cleanup; cleanup deletes ignored\ncontent without backups. Repair a failure and rerun the same command to resume.\n")
 	}
 	return b.String()
 }
 
 type options struct {
-	workspace, existingRoot, only, except, message, skipHooks, retryHook, trunk, name                                                                                    string
+	workspace, existingRoot, only, except, message, skipHooks, retryHook, trunk, name, adapterPath                                                                       string
 	color                                                                                                                                                                colorMode
 	stat, committed, patch, keep, adoptConfig, fetch, json, dry, force, remove, skipHookGit, ignoreHookFailures, noCD, verbose, all, configOnly, base, acknowledge, help bool
 }
@@ -202,8 +202,11 @@ func parseArguments(args []string) (options, string, string, error) {
 		}
 		arg = pos[2]
 	}
+	if command == "_integrate-adapter" && len(pos) == 3 {
+		o.adapterPath = pos[2]
+	}
 	if o.base && arg != "" {
-		return o, command, arg, fmt.Errorf("--base and a Change selector are mutually exclusive")
+		return o, command, arg, fmt.Errorf("--base and a managed workspace selector are mutually exclusive")
 	}
 	if command == "recover" && o.adoptConfig && (o.retryHook != "" || o.acknowledge) {
 		return o, command, arg, fmt.Errorf("--adopt-config is mutually exclusive with hook retry options")

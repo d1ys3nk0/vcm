@@ -68,7 +68,7 @@ func TestStatusAndListExposeUnknownInspectionAndHistory(t *testing.T) {
 	if err = json.Unmarshal([]byte(raw), &list); err != nil {
 		t.Fatal(err)
 	}
-	if list.Changes[0].Dirty != nil {
+	if list.Workspaces[0].Dirty != nil {
 		t.Fatal("unknown dirty count represented as zero")
 	}
 	if err = os.Rename(m.Workspace+".moved", m.Workspace); err != nil {
@@ -78,11 +78,11 @@ func TestStatusAndListExposeUnknownInspectionAndHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	active, err := runJSON[overviewResult](t, "list", "--json", "--workspace", root)
-	if err != nil || len(active.Changes) != 0 {
+	if err != nil || len(active.Workspaces) != 0 {
 		t.Fatalf("completed Change in active list: %+v %v", active, err)
 	}
 	all, err := runJSON[overviewResult](t, "list", "--all", "--json", "--workspace", root)
-	if err != nil || len(all.Changes) != 1 || all.Changes[0].Operation != "merged" || all.Changes[0].Dirty != nil {
+	if err != nil || len(all.Workspaces) != 1 || all.Workspaces[0].Operation != "merged" || all.Workspaces[0].Dirty != nil {
 		t.Fatalf("history: %+v %v", all, err)
 	}
 	if _, err = runOutput(t, "path", m.WorkspaceID, "--workspace", root); err == nil {
@@ -189,23 +189,9 @@ func TestInitRejectsLinkedWorktree(t *testing.T) {
 }
 
 func TestMissingConfiguredSelectedRepositoryIsReported(t *testing.T) {
-	root, m := cliManagedChange(t)
+	root, m := cliManagedWorkspaceWithChild(t)
 	// A live v5 checkpoint remains inspectable after a selected configuration is removed.
-	filename := filepath.Join(root, ".git", "vcm", m.WorkspaceID+".json")
-	raw, err := os.ReadFile(filename)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var state map[string]any
-	if err = json.Unmarshal(raw, &state); err != nil {
-		t.Fatal(err)
-	}
-	state["repositories"].(map[string]any)["retired"] = map[string]any{"base": strings.Repeat("0", 40), "checkout_custody": "vcm", "branch_custody": "vcm"}
-	raw, err = json.Marshal(state)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = os.WriteFile(filename, raw, 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "vcm.yml"), []byte("version: 1\nroot:\n  trunk: main\nchildren: []\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	for _, command := range []string{"status", "list"} {

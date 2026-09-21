@@ -40,8 +40,7 @@ func hookEntry(harness string) map[string]any {
 	hook := map[string]any{"type": "command", "command": command}
 	if harness == "codex" {
 		hook["timeout"] = 30
-		hook["continue"] = false
-		hook["systemMessage"] = "VCM workspace setup failed; inspect the hook error and retry vcm create --existing-root ."
+		hook["statusMessage"] = "Initializing the managed workspace with VCM"
 	}
 	return map[string]any{"matcher": "^(startup|resume)$", "hooks": []any{hook}}
 }
@@ -50,14 +49,15 @@ func openCodePlugin() string {
 	return `// Managed by VCM. Remove with: vcm integrate opencode --remove
 export const VCM_INTEGRATION = "vcm-opencode-worktree-ready-v1";
 
-export const plugin = async ({ $ }: { $: { subprocess: (args: string[]) => Promise<unknown> } }) => ({
-  event: async ({ event, properties }: { event: { type: string }, properties: { directory?: string } }) => {
+export const VCMPlugin = async ({ $, worktree }) => ({
+  event: async ({ event }) => {
     if (event.type !== "worktree.ready") return;
-    const directory = properties.directory;
-    if (!directory) throw new Error("VCM could not determine the ready worktree directory");
-    await $.subprocess(["vcm", "_integrate-adapter", "opencode"]);
+    if (!worktree) throw new Error("VCM could not determine the ready worktree directory");
+    await $` + "`vcm _integrate-adapter opencode ${worktree}`" + `;
   },
 });
+
+export default VCMPlugin;
 `
 }
 
@@ -106,7 +106,7 @@ func integrateJSON(root, harness string, remove, dry bool) (integrationResult, e
 		return integrationResult{}, fmt.Errorf("%s has a non-array hooks.SessionStart setting", path)
 	}
 	wanted := hookEntry(harness)
-	found := -1
+	found := []int{}
 	for i, entry := range entries {
 		if candidate, ok := entry.(map[string]any); ok {
 			if hooksValue, ok := candidate["hooks"].([]any); ok && len(hooksValue) == 1 {
@@ -114,7 +114,7 @@ func integrateJSON(root, harness string, remove, dry bool) (integrationResult, e
 					if !equalJSON(candidate, wanted) {
 						return integrationResult{}, fmt.Errorf("%s contains a modified VCM integration; restore it or remove it manually", path)
 					}
-					found = i
+					found = append(found, i)
 				}
 			}
 		}
@@ -122,10 +122,20 @@ func integrateJSON(root, harness string, remove, dry bool) (integrationResult, e
 	action := "installed"
 	if remove {
 		action = "removed"
-		if found < 0 {
+		if len(found) == 0 {
 			return integrationResult{Harness: harness, Action: "already removed", Files: []string{path}, DryRun: dry}, nil
 		}
-		entries = append(entries[:found], entries[found+1:]...)
+		managed := map[int]bool{}
+		for _, index := range found {
+			managed[index] = true
+		}
+		kept := make([]any, 0, len(entries)-len(found))
+		for index, entry := range entries {
+			if !managed[index] {
+				kept = append(kept, entry)
+			}
+		}
+		entries = kept
 		if len(entries) == 0 {
 			delete(hooks, "SessionStart")
 		} else {
@@ -136,7 +146,7 @@ func integrateJSON(root, harness string, remove, dry bool) (integrationResult, e
 		} else {
 			value["hooks"] = hooks
 		}
-	} else if found >= 0 {
+	} else if len(found) > 0 {
 		return integrationResult{Harness: harness, Action: "already installed", Files: []string{path}, DryRun: dry}, nil
 	} else {
 		hooks["SessionStart"] = append(entries, wanted)
@@ -209,7 +219,9 @@ func integrateHarness(root, harness string, remove, dry bool) (integrationResult
 func eventDirectory(r io.Reader) (string, error) {
 	var event any
 	decoder := json.NewDecoder(r)
-	if err := decoder.Decode(&event); err != nil {
+	if err := decoder.Decode(&event); err == io.EOF {
+		return os.Getwd()
+	} else if err != nil {
 		return "", fmt.Errorf("read harness event: %w", err)
 	}
 	var visit func(any) string
@@ -241,13 +253,35 @@ func eventDirectory(r io.Reader) (string, error) {
 	return os.Getwd()
 }
 
-func runIntegrationAdapter(harness string) error {
+type codexHookOutput struct {
+	Continue      bool   `json:"continue"`
+	StopReason    string `json:"stopReason,omitempty"`
+	SystemMessage string `json:"systemMessage,omitempty"`
+}
+
+func runIntegrationAdapter(harness, explicitPath string) (resultErr error) {
 	if harness != "codex" && harness != "claude" && harness != "opencode" {
 		return fmt.Errorf("unsupported harness adapter %q", harness)
 	}
-	cwd, err := eventDirectory(commandInput)
-	if err != nil {
-		return err
+	if harness == "codex" {
+		defer func() {
+			result := codexHookOutput{Continue: resultErr == nil}
+			if resultErr != nil {
+				result.StopReason = "VCM managed workspace initialization failed"
+				result.SystemMessage = resultErr.Error() + "; retry with vcm create <name> --existing-root <cwd>"
+			}
+			if err := json.NewEncoder(os.Stdout).Encode(result); resultErr == nil && err != nil {
+				resultErr = err
+			}
+		}()
+	}
+	cwd := explicitPath
+	if cwd == "" {
+		var err error
+		cwd, err = eventDirectory(commandInput)
+		if err != nil {
+			return err
+		}
 	}
 	engine, err := vcm.Open(cwd, io.Discard)
 	if err != nil {
