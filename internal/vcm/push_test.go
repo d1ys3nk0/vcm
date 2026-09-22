@@ -170,6 +170,31 @@ func TestPushIsIdempotentAndRetryableAfterPartialPublication(t *testing.T) {
 	}
 }
 
+func TestPushReportsAlreadyCurrentTrunksAsUnchanged(t *testing.T) {
+	e := fixture(t, 1)
+	if err := e.Push(); err != nil {
+		t.Fatal(err)
+	}
+
+	var output bytes.Buffer
+	e.Out = &output
+	if err := e.Push(); err != nil {
+		t.Fatal(err)
+	}
+	for _, repository := range []string{"repo0", "root"} {
+		path := e.Root
+		if repository != "root" {
+			path = filepath.Join(e.Root, repository)
+		}
+		if want := "[push/" + repository + " @ " + path + "] trunk main unchanged at "; !strings.Contains(output.String(), want) {
+			t.Fatalf("push output missing %q:\n%s", want, output.String())
+		}
+	}
+	if strings.Contains(output.String(), " pushed trunk main") {
+		t.Fatalf("already-current push reported publication:\n%s", output.String())
+	}
+}
+
 func TestPushRejectsLaterLocalDrift(t *testing.T) {
 	e := fixture(t, 1)
 	rootBefore := mustGit(t, e.Root, "rev-parse", "HEAD")

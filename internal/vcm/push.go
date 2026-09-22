@@ -128,16 +128,42 @@ func (e *Engine) Push() error {
 			return publicationError(index, true, fmt.Errorf("repository %s: publication destination changed after preflight", r.Name))
 		}
 		refspec := repository.local + ":refs/heads/" + r.Trunk
-		if _, err := git(repository.path, "push", "--", repository.destination, refspec); err != nil {
+		changed, err := pushTrunk(repository.path, repository.destination, refspec)
+		if err != nil {
 			return publicationError(index, true, failure("external_command", r.Name, fmt.Errorf("repository %s push: %w; earlier repositories may already be published, inspect remotes and retry", r.Name, err)))
 		}
 		remoteTrackingRef := "refs/remotes/origin/" + r.Trunk
 		if _, err := git(repository.path, "update-ref", remoteTrackingRef, repository.local); err != nil {
 			return publicationError(index, true, fmt.Errorf("repository %s: trunk was published but cached origin/%s could not be updated: %w", r.Name, r.Trunk, err))
 		}
-		e.logOperationOutcome("push", r.Name, repository.path, "", "pushed", LogChanged, " trunk %s at %s", r.Trunk, abbreviateRevision(repository.local))
+		if changed {
+			e.logOperationOutcome("push", r.Name, repository.path, "", "pushed", LogChanged, " trunk %s at %s", r.Trunk, abbreviateRevision(repository.local))
+		} else {
+			e.logOperationOutcome("push", r.Name, repository.path, fmt.Sprintf("trunk %s ", r.Trunk), "unchanged", LogSuccess, " at %s", abbreviateRevision(repository.local))
+		}
 	}
 	return nil
+}
+
+func pushTrunk(path, destination, refspec string) (bool, error) {
+	output, err := gitRaw(path, "push", "--porcelain", "--", destination, refspec)
+	if err != nil {
+		return false, err
+	}
+	for _, line := range strings.Split(strings.TrimRight(output, "\r\n"), "\n") {
+		if len(line) < 2 || line[1] != '\t' {
+			continue
+		}
+		switch line[0] {
+		case '=':
+			return false, nil
+		case ' ', '*', '+', '-':
+			return true, nil
+		default:
+			return false, fmt.Errorf("unexpected git push porcelain status %q", line[0])
+		}
+	}
+	return false, fmt.Errorf("git push porcelain output did not include a ref status")
 }
 
 func pushDestination(path string) (string, error) {
